@@ -1,0 +1,16 @@
+info:
+  name: 'Create item'
+  type: http
+  seq: 2
+http:
+  method: post
+  url: '{{base}}/items'
+  body:
+    type: json
+    data: |-
+      { "name": "hat" }
+  auth:
+    type: basic
+    basic:
+      username: admin
+      password: '{{password}}'

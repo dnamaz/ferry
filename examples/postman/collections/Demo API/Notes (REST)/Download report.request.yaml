@@ -1,0 +1,6 @@
+$kind: http-request
+method: GET
+url: '{{httpBase}}/report.pdf'
+order: 10000
+auth:
+  type: noauth

@@ -1,0 +1,7 @@
+$kind: http-request
+method: GET
+url: '{{httpBase}}/notes/:id'
+order: 5000
+pathVariables:
+  - key: id
+    value: '{{noteId}}'

@@ -1,0 +1,21 @@
+meta {
+  name: login
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base}}/oauth/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "client_id": "{{clientId}}"
+  }
+}
+
+vars:post-response {
+  token: res.body.access_token
+}

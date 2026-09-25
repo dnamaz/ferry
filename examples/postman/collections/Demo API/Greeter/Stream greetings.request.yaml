@@ -1,0 +1,10 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.greeter.v1.Greeter/StreamGreetings
+order: 2000
+message:
+  content: |-
+    {
+      "name": "{{user}}",
+      "times": 5
+    }

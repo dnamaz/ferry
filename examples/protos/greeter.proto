@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package demo.greeter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Exercises all four RPC shapes.
+service Greeter {
+  rpc SayHello(HelloRequest) returns (HelloReply);
+  rpc StreamGreetings(HelloRequest) returns (stream HelloReply);
+  rpc CollectNames(stream HelloRequest) returns (HelloReply);
+  rpc Chat(stream HelloRequest) returns (stream HelloReply);
+}
+
+message HelloRequest {
+  string name = 1;
+  int32 times = 2;
+  Language language = 3;
+}
+
+message HelloReply {
+  string message = 1;
+  google.protobuf.Timestamp sent_at = 2;
+}
+
+enum Language {
+  LANGUAGE_UNSPECIFIED = 0;
+  LANGUAGE_ENGLISH = 1;
+  LANGUAGE_SPANISH = 2;
+  LANGUAGE_FRENCH = 3;
+}

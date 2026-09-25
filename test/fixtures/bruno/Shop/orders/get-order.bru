@@ -1,0 +1,28 @@
+meta {
+  name: order/{id}
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base}}/orders/:id?expand=items
+  body: none
+  auth: inherit
+}
+
+params:query {
+  expand: items
+  ~debug: true
+}
+
+params:path {
+  id: o-1
+}
+
+headers {
+  Accept: application/json
+}
+
+docs {
+  Returns one order.
+}

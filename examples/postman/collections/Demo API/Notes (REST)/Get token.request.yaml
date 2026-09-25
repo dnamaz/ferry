@@ -1,0 +1,18 @@
+$kind: http-request
+method: POST
+url: '{{httpBase}}/oauth/token'
+order: 2000
+auth:
+  type: noauth
+body:
+  type: json
+  content: |-
+    {
+      "client_id": "{{clientId}}",
+      "client_secret": "{{clientSecret}}",
+      "grant_type": "client_credentials"
+    }
+scripts:
+  - type: afterResponse
+    code: 'pm.environment.set("token", pm.response.json().access_token);'
+    language: text/javascript

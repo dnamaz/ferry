@@ -1,0 +1,19 @@
+info:
+  name: 'Ping'
+  type: grpc
+  seq: 2
+grpc:
+  url: 'grpc://{{grpcHost}}'
+  method: '/demo.greeter.v1.Greeter/Chat'
+  methodType: bidi-streaming
+  metadata:
+    - name: x-trace
+      value: '1'
+  message:
+    - title: 'message 1'
+      message: |-
+        { "name": "a" }
+    - title: 'message 2'
+      message: |-
+        { "name": "b" }
+  auth: inherit

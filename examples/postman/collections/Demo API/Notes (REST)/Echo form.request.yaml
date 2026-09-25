@@ -1,0 +1,16 @@
+$kind: http-request
+method: POST
+url: '{{httpBase}}/echo?source=demo'
+order: 8000
+auth:
+  type: noauth
+headers:
+  - key: X-Request-Id
+    value: '{{$guid}}'
+body:
+  type: urlencoded
+  content:
+    - key: name
+      value: Ada
+    - key: role
+      value: admin

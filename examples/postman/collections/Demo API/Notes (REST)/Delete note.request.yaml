@@ -1,0 +1,7 @@
+$kind: http-request
+method: DELETE
+url: '{{httpBase}}/notes/:id'
+order: 7000
+pathVariables:
+  - key: id
+    value: '{{noteId}}'

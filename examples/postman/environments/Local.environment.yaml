@@ -1,0 +1,22 @@
+name: Local
+values:
+  - key: host
+    value: 'localhost:50051'
+    enabled: true
+    type: default
+  - key: httpBase
+    value: 'http://localhost:8089'
+    enabled: true
+    type: default
+  - key: clientId
+    value: demo-client
+    enabled: true
+    type: default
+  - key: clientSecret
+    value: demo-secret
+    enabled: true
+    type: secret
+  - key: token
+    value: demo-token
+    enabled: true
+    type: secret

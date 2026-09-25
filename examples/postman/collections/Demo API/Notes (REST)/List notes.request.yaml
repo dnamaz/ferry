@@ -1,0 +1,8 @@
+$kind: http-request
+method: GET
+url: '{{httpBase}}/notes'
+order: 3000
+queryParams:
+  - key: tag
+    value: ops
+    disabled: true

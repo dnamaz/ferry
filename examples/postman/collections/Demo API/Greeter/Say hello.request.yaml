@@ -1,0 +1,16 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.greeter.v1.Greeter/SayHello
+order: 1000
+message:
+  content: |-
+    {
+      "name": "{{user}}",
+      "language": "LANGUAGE_FRENCH"
+    }
+metadata:
+  - key: x-request-id
+    value: '{{$guid}}'
+settings:
+  secureConnection: false
+  includeDefaultFields: true

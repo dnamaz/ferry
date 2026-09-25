@@ -1,0 +1,9 @@
+$kind: http-request
+method: GET
+url: '{{httpBase}}/events'
+order: 9000
+auth:
+  type: noauth
+headers:
+  - key: Accept
+    value: text/event-stream

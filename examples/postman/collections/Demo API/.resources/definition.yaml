@@ -1,0 +1,8 @@
+$kind: collection
+name: Demo API
+description: Sample gRPC collection for the bundled demo server (npm run demo-server).
+variables:
+  - key: host
+    value: 'localhost:50051'
+  - key: user
+    value: Ada

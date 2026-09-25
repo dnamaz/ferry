@@ -1,0 +1,6 @@
+$kind: http-request
+method: GET
+url: '{{httpBase}}/healthz'
+order: 1000
+auth:
+  type: noauth

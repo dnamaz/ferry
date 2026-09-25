@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package demo.inventory.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+
+// Requires `authorization: Bearer <token>` metadata.
+service Inventory {
+  rpc GetItem(GetItemRequest) returns (Item);
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc UpdateItem(UpdateItemRequest) returns (Item);
+}
+
+message Item {
+  string sku = 1;
+  string title = 2;
+  int64 quantity = 3;
+  Money price = 4;
+  repeated string tags = 5;
+  map<string, string> attributes = 6;
+  Status status = 7;
+  oneof location {
+    string warehouse = 8;
+    Address store_address = 9;
+  }
+  google.protobuf.Timestamp updated_at = 10;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_IN_STOCK = 1;
+    STATUS_BACKORDERED = 2;
+    STATUS_DISCONTINUED = 3;
+  }
+}
+
+message Money {
+  string currency_code = 1;
+  int64 units = 2;
+  int32 nanos = 3;
+}
+
+message Address {
+  string line1 = 1;
+  string city = 2;
+  string country = 3;
+}
+
+message GetItemRequest {
+  string sku = 1;
+}
+
+message ListItemsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  repeated Item.Status statuses = 3;
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_page_token = 2;
+}
+
+message UpdateItemRequest {
+  Item item = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}

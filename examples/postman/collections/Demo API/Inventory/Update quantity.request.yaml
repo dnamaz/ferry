@@ -1,0 +1,10 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.inventory.v1.Inventory/UpdateItem
+order: 3000
+message:
+  content: |-
+    {
+      "item": { "sku": "SKU-002", "quantity": "12" },
+      "updateMask": "quantity"
+    }

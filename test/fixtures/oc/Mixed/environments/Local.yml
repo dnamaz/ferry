@@ -1,0 +1,7 @@
+name: 'Local'
+variables:
+  - name: base
+    value: 'http://localhost:6'
+  - name: password
+    value: ''
+    secret: true

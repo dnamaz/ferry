@@ -1,0 +1,9 @@
+$kind: grpc-request
+name: 'No auth (fails)'
+url: '{{host}}'
+methodPath: demo.inventory.v1.Inventory/GetItem
+order: 4000
+auth:
+  type: noauth
+message:
+  content: '{"sku": "SKU-001"}'

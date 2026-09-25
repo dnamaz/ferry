@@ -1,0 +1,14 @@
+$kind: http-request
+method: PUT
+url: '{{httpBase}}/notes/:id'
+order: 6000
+pathVariables:
+  - key: id
+    value: '{{noteId}}'
+body:
+  type: json
+  content: |-
+    {
+      "text": "Updated",
+      "tags": ["demo", "edited"]
+    }

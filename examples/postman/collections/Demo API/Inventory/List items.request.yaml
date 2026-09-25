@@ -1,0 +1,10 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.inventory.v1.Inventory/ListItems
+order: 2000
+message:
+  content: |-
+    {
+      "pageSize": 10,
+      "statuses": ["STATUS_IN_STOCK", "STATUS_BACKORDERED"]
+    }

@@ -1,0 +1,10 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.greeter.v1.Greeter/Chat
+order: 4000
+message:
+  content: |-
+    [
+      { "name": "one", "language": "LANGUAGE_SPANISH" },
+      { "name": "two", "language": "LANGUAGE_ENGLISH" }
+    ]

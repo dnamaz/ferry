@@ -1,0 +1,26 @@
+info:
+  name: 'List items'
+  type: http
+  seq: 1
+http:
+  method: GET
+  url: '{{base}}/items/:kind'
+  params:
+    - name: page
+      value: '1'
+      type: query
+    - name: kind
+      value: shoes
+      type: path
+  headers:
+    - name: Accept
+      value: application/json
+  auth: inherit
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        bru.setVar("itemId", res.body.items[0].id);
+settings:
+  timeout: 5000
+  followRedirects: false

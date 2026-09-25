@@ -1,0 +1,57 @@
+{
+  "info": { "_postman_id": "00000000-0000-0000-0000-000000000001", "name": "Shop", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+  "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] },
+  "variable": [{ "key": "base", "value": "http://localhost:1" }, { "key": "base", "value": "http://localhost:2" }],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Get token",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 200) {", "  var t = pm.response.json().access_token;", "  pm.environment.set(\"token\", t);", "}"] } }],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "{\"client_id\": \"{{clientId}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base}}/oauth/token", "host": ["{{base}}"], "path": ["oauth", "token"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Get order",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "application/json" }, { "key": "X-Debug", "value": "1", "disabled": true }],
+        "url": {
+          "raw": "{{base}}/orders/:orderId?expand=items&page=2",
+          "host": ["{{base}}"],
+          "path": ["orders", ":orderId"],
+          "query": [{ "key": "expand", "value": "items" }, { "key": "page", "value": "2" }, { "key": "debug", "value": "true", "disabled": true }],
+          "variable": [{ "key": "orderId", "value": "o-1", "description": "Order id" }]
+        }
+      },
+      "response": [{ "name": "OK", "code": 200, "body": "{}" }]
+    },
+    {
+      "name": "Upload",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "formdata", "formdata": [{ "key": "note", "value": "hi", "type": "text" }, { "key": "file", "type": "file", "src": "./receipt.pdf" }] },
+        "url": "{{base}}/upload"
+      }
+    },
+    {
+      "name": "Search",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "urlencoded", "urlencoded": [{ "key": "q", "value": "shoes" }] },
+        "url": { "raw": "{{base}}/search" }
+      }
+    }
+  ]
+}

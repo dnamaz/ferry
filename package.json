@@ -1,0 +1,43 @@
+{
+  "name": "ferry",
+  "version": "0.1.0",
+  "description": "Terminal API client for gRPC and REST: discover services, manage collections, import Postman and Bruno, export Postman v3/v2.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "dev": "tsx src/cli.tsx",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "demo-server": "tsx examples/server/server.ts"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.15.0",
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
+    "commander": "^15.0.0",
+    "ink": "^6.8.0",
+    "protobufjs": "^7.6.6",
+    "react": "^19.3.0",
+    "undici": "^7.30.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@grpc/reflection": "^1.0.4",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "private": true,
+  "bin": {
+    "ferry": "dist/cli.js",
+    "fy": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

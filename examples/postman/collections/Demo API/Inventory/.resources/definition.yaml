@@ -1,0 +1,7 @@
+$kind: collection
+order: 2000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'

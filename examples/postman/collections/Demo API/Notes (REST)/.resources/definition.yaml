@@ -1,0 +1,8 @@
+$kind: collection
+description: REST requests for the demo HTTP server (npm run demo-server, port 8089). Run "Get token" first; it captures {{token}}.
+order: 3000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{token}}'

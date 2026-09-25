@@ -1,0 +1,11 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.greeter.v1.Greeter/CollectNames
+order: 3000
+message:
+  content: |-
+    [
+      { "name": "Ada" },
+      { "name": "Grace" },
+      { "name": "Linus" }
+    ]

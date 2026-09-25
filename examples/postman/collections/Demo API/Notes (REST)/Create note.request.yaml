@@ -1,0 +1,15 @@
+$kind: http-request
+method: POST
+url: '{{httpBase}}/notes'
+order: 4000
+body:
+  type: json
+  content: |-
+    {
+      "text": "Created from ferry at {{$isoTimestamp}}",
+      "tags": ["demo"]
+    }
+scripts:
+  - type: afterResponse
+    code: 'pm.environment.set("noteId", pm.response.json().id);'
+    language: text/javascript

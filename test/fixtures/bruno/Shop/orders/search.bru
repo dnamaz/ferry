@@ -1,0 +1,27 @@
+meta {
+  name: search
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base}}/search
+  body: formUrlEncoded
+  auth: apikey
+}
+
+auth:apikey {
+  key: api_key
+  value: {{apiKey}}
+  placement: queryparams
+}
+
+body:form-urlencoded {
+  q: shoes
+  ~sort: price
+}
+
+script:post-response {
+  const body = res.getBody();
+  bru.setEnvVar("firstId", res.body.items[0].id);
+}

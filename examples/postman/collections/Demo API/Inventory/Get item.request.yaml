@@ -1,0 +1,9 @@
+$kind: grpc-request
+url: '{{host}}'
+methodPath: demo.inventory.v1.Inventory/GetItem
+order: 1000
+message:
+  content: |-
+    {
+      "sku": "SKU-001"
+    }

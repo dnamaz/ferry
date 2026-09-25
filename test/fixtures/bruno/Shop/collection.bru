@@ -1,0 +1,15 @@
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+headers {
+  X-Client: ferry-tests
+}
+
+vars:pre-request {
+  base: http://localhost:4
+}
