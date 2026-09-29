@@ -42,6 +42,19 @@ function agentFor(strict: boolean, tls: TlsFiles, baseDir?: string): Agent {
   return a;
 }
 
+type ErrorCause = Error & { code?: string; errors?: Error[] };
+
+/**
+ * undici wraps network failures as "fetch failed" with the real reason in `cause`. When a host
+ * resolves to several addresses and all fail, the cause is an AggregateError with an empty message,
+ * so the per-address errors have to be pulled out of `errors`.
+ */
+export function fetchErrorMessage(err: Error): string {
+  const cause = (err as Error & { cause?: ErrorCause }).cause;
+  const detail = cause?.message || cause?.errors?.map((e) => e.message).join('; ') || cause?.code;
+  return detail && !err.message.includes(detail) ? `${err.message}: ${detail}` : err.message;
+}
+
 const IMPLIED_CONTENT_TYPES: Record<string, string> = {
   json: 'application/json',
   xml: 'application/xml',
@@ -196,8 +209,7 @@ export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) =>
       if (cancelled) result.state = 'cancelled';
       else {
         result.state = 'error';
-        const cause = (err as Error & { cause?: Error }).cause;
-        result.error = explainTlsError(cause?.message && !err.message.includes(cause.message) ? `${err.message}: ${cause.message}` : err.message);
+        result.error = explainTlsError(fetchErrorMessage(err));
         if (controller.signal.aborted && controller.signal.reason instanceof Error) result.error = controller.signal.reason.message;
       }
       return result;
