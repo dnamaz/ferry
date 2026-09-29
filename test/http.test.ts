@@ -1,11 +1,13 @@
-import type { Server } from 'node:http';
+import { once } from 'node:events';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startDemoHttpServer } from '../examples/server/http-server.js';
 import { evaluateHttpCaptures } from '../src/core/captures.js';
 import { type Collection, type Folder, type HttpRequest, newHttpRequest } from '../src/core/model.js';
 import { resolveHttpRequest } from '../src/core/resolve.js';
-import { jsonBody, looksBinary, sendHttp } from '../src/http/client.js';
+import { fetchErrorMessage, jsonBody, looksBinary, sendHttp } from '../src/http/client.js';
 import { toCurl } from '../src/http/curl.js';
 
 let server: Server;
@@ -117,9 +119,27 @@ describe('HTTP requests', () => {
   });
 
   it('reports connection errors', async () => {
-    const r = await sendHttp(resolveHttpRequest(newHttpRequest({ url: 'http://localhost:1/x' }), {})).done;
+    const probe = createServer().listen(0, '127.0.0.1');
+    await once(probe, 'listening');
+    const { port } = probe.address() as AddressInfo;
+    await new Promise((r) => probe.close(r));
+    const r = await sendHttp(resolveHttpRequest(newHttpRequest({ url: `http://127.0.0.1:${port}/x` }), {})).done;
     expect(r.state).toBe('error');
-    expect(r.error).toMatch(/ECONNREFUSED|fetch failed/);
+    expect(r.error).toMatch(/^fetch failed: .*ECONNREFUSED/);
+  });
+
+  it('surfaces per-address errors when every address fails', () => {
+    const aggregate = Object.assign(
+      new AggregateError([new Error('connect ETIMEDOUT 10.0.0.1:80'), new Error('connect ENETUNREACH 10.0.0.2:80')], ''),
+      { code: 'ETIMEDOUT' },
+    );
+    expect(fetchErrorMessage(new TypeError('fetch failed', { cause: aggregate }))).toBe(
+      'fetch failed: connect ETIMEDOUT 10.0.0.1:80; connect ENETUNREACH 10.0.0.2:80',
+    );
+    expect(fetchErrorMessage(new TypeError('fetch failed', { cause: Object.assign(new Error(''), { code: 'ECONNRESET' }) }))).toBe(
+      'fetch failed: ECONNRESET',
+    );
+    expect(fetchErrorMessage(new Error('Timed out after 100 ms'))).toBe('Timed out after 100 ms');
   });
 
   it('builds curl commands', () => {
