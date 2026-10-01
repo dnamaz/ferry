@@ -24,6 +24,7 @@ import {
   type HttpRequest,
   type Item,
   type KV,
+  type SchemaSource,
   type Script,
   newId,
   sortItems,
@@ -34,6 +35,20 @@ type Obj = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (v === undefined || v === null ? undefined : String(v));
 const arr = (v: unknown): Obj[] => (Array.isArray(v) ? v.filter((x): x is Obj => !!x && typeof x === 'object') : []);
 const listDir = (dir: string) => readdirSync(dir).sort();
+
+/**
+ * A collection's .proto files, from bruno.json's `protobuf` (Bru lang) or opencollection.yml's
+ * `config.protobuf`. Both are `{ protoFiles: [{ path }], importPaths: [{ path, enabled? }] }`,
+ * paths relative to the collection folder. Without this every gRPC request falls back to server
+ * reflection, which a server or proxy that refuses reflection answers with PERMISSION_DENIED.
+ */
+function protobufSchema(pb: unknown): SchemaSource | undefined {
+  if (!pb || typeof pb !== 'object') return undefined;
+  const paths = (v: unknown) =>
+    arr(v).filter((e) => e.enabled !== false).map((e) => str(e.path)).filter((x): x is string => !!x);
+  const files = paths((pb as Obj).protoFiles);
+  return files.length ? { type: 'proto', files, importPaths: paths((pb as Obj).importPaths) } : undefined;
+}
 
 export function isBruCollection(dir: string): boolean {
   return existsSync(join(dir, 'bruno.json'));
@@ -270,8 +285,11 @@ function bruItems(dir: string, warnings: string[]): Item[] {
 
 export function importBruCollection(dir: string, warnings: string[] = []): { collection: Collection; environments: Environment[] } {
   let name = basename(dir);
+  let schema: SchemaSource | undefined;
   try {
-    name = str((JSON.parse(readFileSync(join(dir, 'bruno.json'), 'utf8')) as Obj).name) ?? name;
+    const meta = JSON.parse(readFileSync(join(dir, 'bruno.json'), 'utf8')) as Obj;
+    name = str(meta.name) ?? name;
+    schema = protobufSchema(meta.protobuf);
   } catch {
     warnings.push(`${dir}/bruno.json: not valid JSON`);
   }
@@ -286,6 +304,7 @@ export function importBruCollection(dir: string, warnings: string[] = []): { col
     headers: headers.length ? headers : undefined,
     scripts: bruScripts(blocks),
     description: bruText(blocks.get('docs')),
+    schema,
     items: bruItems(dir, warnings),
     importedFrom: dir,
   };
@@ -519,6 +538,7 @@ export function importOpenCollection(dir: string, warnings: string[] = []): { co
     variables: ocKVs(request.variables ?? request.vars ?? root.variables),
     auth: ocAuth(request.auth),
     headers: headers.length ? headers : undefined,
+    schema: protobufSchema((root.config as Obj | undefined)?.protobuf),
     items: ocItems(dir, warnings),
     importedFrom: dir,
   };

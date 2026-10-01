@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseBru } from '../src/core/bruno.js';
 import { importAny } from '../src/core/importers.js';
@@ -184,5 +184,52 @@ describe('mixed folders', () => {
     const res = importAny(join(FIX));
     expect(res.formats.sort()).toEqual(['bruno', 'opencollection', 'postman-v2']);
     expect(res.collections.map((c) => c.name).sort()).toEqual(['Mixed', 'Shop', 'Shop (Postman v2)']);
+  });
+});
+
+describe('Bruno collection .proto files', () => {
+  const write = (dir: string, file: string, content: string) => {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), content);
+  };
+  const expected = { type: 'proto', files: ['../protos/a.proto', '../protos/b.proto'], importPaths: ['../protos'] };
+
+  it('reads opencollection.yml config.protobuf as the collection schema', () => {
+    const dir = mktemp();
+    write(dir, 'opencollection.yml', [
+      'opencollection: 1.0.0',
+      'info:',
+      '  name: Protos',
+      'config:',
+      '  protobuf:',
+      '    protoFiles:',
+      "      - { type: file, path: '../protos/a.proto' }",
+      "      - { type: file, path: '../protos/b.proto' }",
+      '    importPaths:',
+      "      - path: '../protos'",
+      "      - { path: '../off', enabled: false }",
+      '',
+    ].join('\n'));
+    const col = importAny(dir).collections[0]!;
+    expect(col.schema).toEqual(expected);
+    expect(col.importedFrom).toBe(dir);
+  });
+
+  it('reads bruno.json protobuf as the collection schema', () => {
+    const dir = mktemp();
+    write(dir, 'bruno.json', JSON.stringify({
+      version: '1', name: 'Protos', type: 'collection',
+      protobuf: {
+        protoFiles: [{ path: '../protos/a.proto' }, { path: '../protos/b.proto' }],
+        importPaths: [{ path: '../protos', enabled: true }, { path: '../off', enabled: false }],
+      },
+    }));
+    expect(importAny(dir).collections[0]!.schema).toEqual(expected);
+  });
+
+  it('leaves the schema unset (reflection) when the collection lists no .proto files', () => {
+    const dir = mktemp();
+    write(dir, 'opencollection.yml', 'opencollection: 1.0.0\ninfo:\n  name: Plain\n');
+    expect(importAny(dir).collections[0]!.schema).toBeUndefined();
   });
 });

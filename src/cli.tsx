@@ -19,6 +19,17 @@ import { discover } from './grpc/discovery.js';
 import { toGrpcurl } from './grpc/grpcurl.js';
 import { type CallResult, invoke } from './grpc/invoke.js';
 import { evaluateCaptures, evaluateHttpCaptures } from './core/captures.js';
+import {
+  type ScriptOutcome,
+  grpcRequestInfo,
+  grpcResponseInfo,
+  httpRequestInfo,
+  httpResponseInfo,
+  runPhase,
+  secretMask,
+  summarizeOutcome,
+  withLocals,
+} from './core/scripts.js';
 import { describeMethod, kindLabel, methodTemplate } from './grpc/schema.js';
 import { App } from './ui/App.js';
 import { ALT_SCREEN_OFF, ALT_SCREEN_ON, setInkClear } from './ui/terminal.js';
@@ -168,7 +179,7 @@ async function readData(data: string): Promise<string> {
   return data;
 }
 
-async function runCall(opts: Parameters<typeof invoke>[0], verbose: boolean, after?: (r: CallResult) => void) {
+async function runCall(opts: Parameters<typeof invoke>[0], verbose: boolean, after?: (r: CallResult) => void | Promise<void>) {
   let printed = 0;
   const handle = invoke({
     ...opts,
@@ -185,7 +196,7 @@ async function runCall(opts: Parameters<typeof invoke>[0], verbose: boolean, aft
     for (const [k, v] of r.trailers) process.stderr.write(`< (trailer) ${k}: ${v}\n`);
     process.stderr.write(`status: ${r.codeName ?? r.state} (${r.durationMs} ms)\n`);
   }
-  if (r.state === 'done') after?.(r);
+  if (r.state !== 'cancelled' && r.code !== undefined) await after?.(r);
   if (r.error) throw new Error(r.error);
   if (r.state !== 'done') {
     process.stderr.write(`${r.codeName ?? r.state}: ${r.details ?? ''}\n`);
@@ -354,15 +365,39 @@ function reportCaptures(w: Workspace, results: ReturnType<typeof evaluateCapture
   }
 }
 
+/** Prints script output to stderr; failed scripts or tests make the exit code 1. */
+function reportScripts(outcome: ScriptOutcome | undefined, environment?: Environment) {
+  if (!outcome) return;
+  for (const line of outcome.logs) process.stderr.write(`script: ${line}\n`);
+  const { text, ok } = summarizeOutcome(outcome, secretMask(environment));
+  if (text) process.stderr.write(`${text}\n`);
+  if (!ok) process.exitCode = 1;
+}
+
+type Located = NonNullable<ReturnType<Workspace['locate']>>;
+
+/** Runs pre-request scripts; returns the environment to resolve with (including pm.variables values). */
+async function preRequest(w: Workspace, req: HttpRequest | GrpcRequest, loc: Located, environment: Environment | undefined, info: Parameters<typeof runPhase>[1]['info']) {
+  const outcome = await runPhase('before', { store: w, request: req, collection: loc.collection, ancestors: loc.ancestors, environment, info });
+  reportScripts(outcome, environment);
+  if (outcome?.error) throw new Error(`request not sent: ${outcome.error}`);
+  return { ran: !!outcome, environment: withLocals(environment, outcome?.locals ?? {}) };
+}
+
 async function runHttp(
   w: Workspace,
   item: HttpRequest,
-  loc: NonNullable<ReturnType<Workspace['locate']>>,
+  loc: Located,
   environment: Environment | undefined,
-  o: { data?: string; verbose?: boolean; output?: string },
+  o: { data?: string; verbose?: boolean; output?: string; scripts?: boolean },
 ) {
   const req: HttpRequest = o.data ? { ...item, body: { ...item.body, type: item.body.type === 'none' ? 'json' : item.body.type, content: await readData(o.data) } } : item;
-  const r = resolveHttpRequest(req, { collection: loc.collection, ancestors: loc.ancestors, environment, certificates: w.settings.certificates });
+  const ctx = { collection: loc.collection, ancestors: loc.ancestors, environment, certificates: w.settings.certificates };
+  let r = resolveHttpRequest(req, ctx);
+  if (o.scripts !== false) {
+    const pre = await preRequest(w, req, loc, environment, httpRequestInfo(req.name, r));
+    if (pre.ran) r = resolveHttpRequest(req, { ...ctx, environment: pre.environment });
+  }
   warn(r);
   const token = await oauthToken(w, r.oauth, o.verbose);
   if (o.verbose) {
@@ -388,10 +423,18 @@ async function runHttp(
     else process.stdout.write(res.body.toString('utf8') + (res.body.length && !res.body.toString('utf8').endsWith('\n') ? '\n' : ''));
   }
   const ok = res.status !== undefined && res.status < 300;
-  if (ok && item.captures?.length) {
+  if (o.scripts !== false && res.status !== undefined) {
+    reportScripts(
+      await runPhase('after', { store: w, request: req, collection: loc.collection, ancestors: loc.ancestors, environment, info: httpRequestInfo(req.name, r), response: httpResponseInfo(res) }),
+      environment,
+    );
+  }
+  // Captures read from a script that now runs itself; skip them to avoid doing it twice.
+  const captures = (item.captures ?? []).filter((c) => o.scripts === false || c.source !== 'script');
+  if (ok && captures.length) {
     const json = jsonBody(res);
     if (json === undefined) process.stderr.write('captures skipped: the response body is not JSON\n');
-    else reportCaptures(w, evaluateHttpCaptures(item.captures, json), loc.collection.id, environment);
+    else reportCaptures(w, evaluateHttpCaptures(captures, json), loc.collection.id, environment);
   }
   if (!ok) {
     if (!o.verbose) process.stderr.write(`${res.status} ${res.statusText}\n`);
@@ -477,25 +520,34 @@ program
   .option('-d, --data <json>', 'override the saved message / body ("@file", "-" for stdin)')
   .option('-o, --output <file>', 'HTTP: write the response body to a file')
   .option('-v, --verbose', 'print request/response headers and status to stderr')
-  .description('Send a saved request (HTTP or gRPC)')
-  .action((path: string, o: { env?: string; data?: string; verbose?: boolean; output?: string }) =>
+  .option('--no-scripts', "don't run pre-request / post-response scripts")
+  .description('Send a saved request (HTTP or gRPC); runs its scripts and captures')
+  .action((path: string, o: { env?: string; data?: string; verbose?: boolean; output?: string; scripts?: boolean }) =>
     withErrors(async () => {
       const w = ws();
       const { item, loc, environment } = findSendable(w, path, o.env);
       if (item.type === 'http') return runHttp(w, item, loc, environment, o);
-      const found = { item };
       const req: GrpcRequest = { ...item, ...(o.data ? { message: await readData(o.data) } : {}) };
-      const r = resolveRequest(req, { collection: loc.collection, ancestors: loc.ancestors, environment, certificates: w.settings.certificates });
+      const ctx = { collection: loc.collection, ancestors: loc.ancestors, environment, certificates: w.settings.certificates };
+      let r = resolveRequest(req, ctx);
+      if (o.scripts !== false) {
+        const pre = await preRequest(w, req, loc, environment, grpcRequestInfo(req.name, r));
+        if (pre.ran) r = resolveRequest(req, { ...ctx, environment: pre.environment });
+      }
       warn(r);
       const token = await oauthToken(w, r.oauth, o.verbose);
       const metadata = r.oauth && token ? withToken(r.metadata, r.oauth, token, true) : r.metadata;
       const schema = await discover({ source: r.schema, url: r.url, settings: r.settings, tls: r.tls, metadata, baseDir: r.baseDir });
       const method = schema.findMethod(r.methodPath);
       if (!method) throw new Error(`method ${r.methodPath} not found on ${r.url}`);
-      const captures = found.item.captures ?? [];
-      await runCall({ url: r.url, settings: r.settings, tls: r.tls, baseDir: r.baseDir, schema, method, message: r.message, metadata }, !!o.verbose, (res) =>
-        reportCaptures(w, evaluateCaptures(captures, res.messages), loc.collection.id, environment),
-      );
+      const captures = (item.captures ?? []).filter((c) => o.scripts === false || c.source !== 'script');
+      await runCall({ url: r.url, settings: r.settings, tls: r.tls, baseDir: r.baseDir, schema, method, message: r.message, metadata }, !!o.verbose, async (res) => {
+        if (o.scripts !== false) {
+          const response = grpcResponseInfo(res);
+          reportScripts(await runPhase('after', { store: w, request: req, ...ctx, info: grpcRequestInfo(req.name, r), response }), environment);
+        }
+        if (res.state === 'done' && captures.length) reportCaptures(w, evaluateCaptures(captures, res.messages), loc.collection.id, environment);
+      });
     }),
   );
 

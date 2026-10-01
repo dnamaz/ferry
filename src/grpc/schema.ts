@@ -141,6 +141,12 @@ for (const wkt of WKT_FILES.values()) collectSymbols(wkt, WKT_SYMBOLS);
  *   servers) write them relative to the current scope ("Msg", "Item.Status").
  * - protobufjs also regroups types into one synthetic file per package with
  *   empty `dependency` lists, so imports are recomputed from actual references.
+ * - protobufjs also copies every extension into the message it extends, as a
+ *   field named by the extension's full name (FieldOptions gets
+ *   ".buf.validate.field"). Such a field is not a legal field name, and it
+ *   makes the extended file (google/protobuf) import the extending one
+ *   (buf/validate) while that one imports it back: a cycle protobuf-es
+ *   refuses. They are dropped; they only describe options.
  * - Servers often omit well-known types; bundled copies are added when a
  *   referenced symbol isn't defined anywhere.
  * - Files are returned in dependency order.
@@ -173,6 +179,7 @@ export function repairDescriptors(input: FileDescriptorProto[]): FileDescriptorP
   };
   const fixMessage = (m: Msg, scope: string) => {
     const name = `${scope}.${m.name}`;
+    m.field = m.field.filter((field) => !field.name.startsWith('.'));
     for (const field of [...m.field, ...m.extension]) {
       if (!field.jsonName) field.jsonName = jsonName(field.name);
       if (field.typeName) {

@@ -6,12 +6,12 @@ import { kvSummary } from '../../core/resolve.js';
 import { type MethodInfo, isClientStreaming, kindLabel } from '../../grpc/schema.js';
 import { icons, theme } from '../theme.js';
 import { jsonError, padEnd, truncate } from '../util.js';
-import { JsonLine } from './JsonLine.js';
+import { JsonLine, type VarLookup } from './JsonLine.js';
 import { TextEditor } from './TextEditor.js';
 
-export const REQUEST_FIELDS = ['name', 'url', 'method', 'metadata', 'auth', 'settings', 'captures', 'message'] as const;
+export const REQUEST_FIELDS = ['name', 'url', 'method', 'metadata', 'auth', 'settings', 'captures', 'scripts', 'message'] as const;
 /** HTTP rows; `pathvars` is only shown when the URL has :variables. */
-export const HTTP_FIELDS = ['name', 'method', 'url', 'params', 'pathvars', 'headers', 'auth', 'body', 'settings', 'captures', 'message'] as const;
+export const HTTP_FIELDS = ['name', 'method', 'url', 'params', 'pathvars', 'headers', 'auth', 'body', 'settings', 'captures', 'scripts', 'message'] as const;
 export type RequestField = (typeof REQUEST_FIELDS)[number] | (typeof HTTP_FIELDS)[number];
 
 interface Props {
@@ -29,11 +29,16 @@ interface Props {
   messageEditing: boolean;
   onMessageChange: (v: string) => void;
   onMessageExit: () => void;
+  /** values of `{{vars}}` in the active scopes, for coloring the message */
+  vars?: VarLookup;
+  /** sets a `{{var}}` from the message editor (enter on it) */
+  onSetVar?: (name: string, value: string) => void;
   method?: MethodInfo;
   resolvedUrl?: string;
   authSummary: string;
   settingsSummary: string;
   capturesSummary: string;
+  scriptsSummary: string;
 }
 
 const LABELS: Record<RequestField, string> = {
@@ -44,6 +49,7 @@ const LABELS: Record<RequestField, string> = {
   auth: 'Auth',
   settings: 'Settings',
   captures: 'Captures',
+  scripts: 'Scripts',
   message: 'Message',
   params: 'Params',
   pathvars: 'Path vars',
@@ -114,9 +120,8 @@ export function RequestPanel(props: Props) {
     ),
   );
 
-  // Header (1) + 6 field rows + separator (1) + message header (1) + borders (2)
-  // Header (1) + 7 field rows + separator (1) + message header (1) + borders (2)
-  const editorHeight = Math.max(1, height - 12);
+  // Header (1) + 8 field rows + separator (1) + message header (1) + borders (2)
+  const editorHeight = Math.max(1, height - 13);
   const err = jsonError(request.message);
   const inputType = method ? method.desc.input.typeName.split('.').pop() : undefined;
   const streamingHint = method && isClientStreaming(method.kind) ? ' · JSON array = multiple messages' : '';
@@ -144,6 +149,12 @@ export function RequestPanel(props: Props) {
           {truncate(props.capturesSummary, valueWidth)}
         </Text>,
       )}
+      {row(
+        'scripts',
+        <Text wrap="truncate-end" color={request.scripts?.length ? undefined : theme.muted}>
+          {truncate(props.scriptsSummary, valueWidth)}
+        </Text>,
+      )}
       <Text color={theme.border}>{'─'.repeat(inner)}</Text>
       {row(
         'message',
@@ -157,7 +168,7 @@ export function RequestPanel(props: Props) {
         </Text>,
       )}
       {props.messageEditing ? (
-        <TextEditor value={request.message} onChange={props.onMessageChange} width={inner} height={editorHeight} active onExit={props.onMessageExit} />
+        <TextEditor value={request.message} onChange={props.onMessageChange} width={inner} height={editorHeight} active onExit={props.onMessageExit} vars={props.vars} onSetVar={props.onSetVar} />
       ) : (
         <Box flexDirection="column" height={editorHeight}>
           {request.message
@@ -168,7 +179,7 @@ export function RequestPanel(props: Props) {
                 <Text color={theme.muted} dimColor>
                   {String(i + 1).padStart(3)}{' '}
                 </Text>
-                <JsonLine line={line} width={inner - 4} />
+                <JsonLine line={line} width={inner - 4} vars={props.vars} />
               </Box>
             ))}
         </Box>

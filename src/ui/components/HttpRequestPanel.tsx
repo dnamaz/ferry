@@ -4,7 +4,7 @@ import type { HttpRequest } from '../../core/model.js';
 import { kvSummary } from '../../core/resolve.js';
 import { icons, theme } from '../theme.js';
 import { jsonError, padEnd, truncate } from '../util.js';
-import { JsonLine } from './JsonLine.js';
+import { JsonLine, PlainLine, type VarLookup } from './JsonLine.js';
 import type { RequestField } from './RequestPanel.js';
 import { TextEditor } from './TextEditor.js';
 import { TextField } from './TextField.js';
@@ -30,6 +30,7 @@ const LABELS: Partial<Record<RequestField, string>> = {
   body: 'Body',
   settings: 'Settings',
   captures: 'Captures',
+  scripts: 'Scripts',
   message: 'Content',
 };
 
@@ -62,10 +63,15 @@ interface Props {
   messageEditing: boolean;
   onMessageChange: (v: string) => void;
   onMessageExit: () => void;
+  /** values of `{{vars}}` in the active scopes, for coloring the message */
+  vars?: VarLookup;
+  /** sets a `{{var}}` from the message editor (enter on it) */
+  onSetVar?: (name: string, value: string) => void;
   resolvedUrl?: string;
   authSummary: string;
   settingsSummary: string;
   capturesSummary: string;
+  scriptsSummary: string;
 }
 
 /** Text shown in the body editor area: raw content, or a summary for structured bodies. */
@@ -165,6 +171,8 @@ export function HttpRequestPanel(props: Props) {
         return row('settings', plain(props.settingsSummary));
       case 'captures':
         return row('captures', request.captures?.length ? plain(props.capturesSummary) : muted(props.capturesSummary));
+      case 'scripts':
+        return row('scripts', request.scripts?.length ? plain(props.scriptsSummary) : muted(props.scriptsSummary));
       case 'message':
         return (
           <React.Fragment key="message">
@@ -204,7 +212,7 @@ export function HttpRequestPanel(props: Props) {
       {rendered.slice(0, -1)}
       {rendered.at(-1)}
       {props.messageEditing && body.editable ? (
-        <TextEditor value={body.text} onChange={props.onMessageChange} width={inner} height={editorHeight} active onExit={props.onMessageExit} json={body.json} />
+        <TextEditor value={body.text} onChange={props.onMessageChange} width={inner} height={editorHeight} active onExit={props.onMessageExit} json={body.json} vars={props.vars} onSetVar={props.onSetVar} />
       ) : (
         <Box flexDirection="column" height={editorHeight}>
           {(request.body.type === 'none' ? [] : body.text.split('\n'))
@@ -214,7 +222,7 @@ export function HttpRequestPanel(props: Props) {
                 <Text color={theme.muted} dimColor>
                   {String(i + 1).padStart(3)}{' '}
                 </Text>
-                {body.json ? <JsonLine line={line} width={inner - 4} /> : <Text wrap="truncate-end">{truncate(line, inner - 4) || ' '}</Text>}
+                {body.json ? <JsonLine line={line} width={inner - 4} vars={props.vars} /> : <PlainLine line={line} width={inner - 4} vars={props.vars} />}
               </Box>
             ))}
         </Box>

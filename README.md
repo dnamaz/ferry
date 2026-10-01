@@ -133,6 +133,36 @@ Press `enter` in the response pane to **select a value**: `↑↓` moves between
 
 Paths are `[message index].field.path`, e.g. `[0].items[2].sku`; streaming responses have one index per message. `ferry run` applies captures too, so `run ".../ListAddresses"` followed by `run ".../GetAddress"` chains from scripts. Captures are exported as Postman after-response scripts (`pm.environment.set("addressId", pm.response.messages.idx(0).data.addressId);`) and scripts of that exact shape are imported back as captures.
 
+### Scripts (e.g. log in once, then every call is authorized)
+
+Requests have a **Scripts** field: pre-request and post-response scripts in **JavaScript or TypeScript** (types are stripped by Node's built-in type stripping, Node 22.13+). `enter` on Scripts picks one to edit in `$VISUAL`/`$EDITOR` (a `.ts` file, with a commented example); emptying it deletes it. Collection and folder scripts run too (collection → folders → request), as in Postman.
+
+A typical token request stores the token, and every gRPC call sends it through metadata `authorization: Bearer {{accessToken}}`:
+
+```js
+// "Get token" → post-response. Bruno style:
+const body = res.getBody();
+if (!body?.access_token) throw new Error('No token: ' + JSON.stringify(body));
+bru.setEnvVar('accessToken', body.access_token);
+
+// or Postman style:
+pm.environment.set('accessToken', pm.response.json().access_token);
+```
+
+Send it (`ctrl+r`, or `ferry run "My API/Auth/Get token"`) and `{{accessToken}}` is saved to the active environment (else the collection), keeping its **secret** flag. It's written to the environment file, so it survives restarts and later `ferry run`s.
+
+| API | Available |
+| --- | --- |
+| Postman | `pm.environment` / `pm.collectionVariables` / `pm.globals` (`get`, `set`, `unset`, `has`, `replaceIn`), `pm.variables` (values for this send only, e.g. from a pre-request script), `pm.response.json()` / `.text()` / `.code` / `.status` / `.headers.get()` / `.responseTime` / `.to.have.status()`, gRPC `pm.response.messages.idx(n).data` / `.count()` / `.metadata` / `.trailers`, `pm.request`, `pm.info`, `pm.test`, `pm.expect` |
+| Bruno | `bru.setEnvVar` / `getEnvVar` / `setVar` / `getVar` / `deleteVar` / `getCollectionVar` / `getEnvName` / `getProcessEnv` / `interpolate` / `sleep`, `res.getBody()` / `res.body` / `res.getStatus()` / `res.getHeader()` / `res.getResponseTime()` / `res('path.to.value')`, `req.getUrl()` / `getMethod()` / `getHeader()`, `test`, `expect` |
+| Also | `console.log` (shown under **Metadata**/**Headers** in the response pane, `m`), `await`, `crypto`, `Buffer`, `atob`/`btoa`, `URL`, and `require()` of `crypto`, `buffer`, `url`, `querystring`, `util`, `path` |
+
+For gRPC, `res.getBody()` / `pm.response.json()` return the response message (an array for streams). Bruno's session-only `bru.setVar` is stored in the environment so chaining works across runs. Not supported: `pm.sendRequest`, changing the request's headers from a script (use `{{vars}}` in headers instead), and chai's full `expect` (the common assertions are there: `equal`, `eql`, `include`, `property`, `a`/`an`, `ok`, `above`/`below`, `lengthOf`, `match`, `not`, …).
+
+A failing pre-request script stops the request. Post-response scripts run for every response that has a status (including HTTP 4xx/5xx and non-OK gRPC statuses); errors and failed tests show at the top of the response and in the status line. Scripts get a 10-second timeout per script.
+
+> **Scripts are code.** They run in a separate V8 context, which isn't a security sandbox: a script can do what you can. Imported collections' scripts now run on send, so only send requests from collections you trust. `ferry run --no-scripts` skips them.
+
 ### TLS, auth and headers
 
 **TLS.** gRPC turns TLS on with `grpcs://` or Settings → TLS; HTTP uses it for `https://`. For both you can set a **CA certificate** (to trust a private CA), a **client certificate + key** (PEM) or a **PKCS#12 bundle** (`.p12`/`.pfx`) for mTLS, and a **passphrase** (`{{var}}` works). Certificate verification can be turned off per request. gRPC also has a **server name** override that sets the TLS name and `:authority` independently of the address — for tunnels, port-forwards and proxies (e.g. connect to `localhost:9443` but verify `svc.internal`).
@@ -181,7 +211,7 @@ Descriptors from protobufjs-based servers (e.g. `@grpc/reflection`) are repaired
 
 When one folder holds the same collection in several formats (e.g. Postman JSON plus a Bruno copy), the duplicates are labelled `(Postman v2)`, `(Bruno)`, …; identical environments are imported once. After an import, the environment that defines the collection's `{{variables}}` is activated.
 
-Post-response scripts that just store a response value become **captures** (so they work here without running JavaScript): `pm.environment.set("t", pm.response.json().access_token)`, the `var t = pm.response.json()…; pm.environment.set("t", t)` idiom, Bruno's `bru.setEnvVar("t", res.body.x)` and `vars:post-response { t: res.body.access_token }`. Scripts with other logic are kept (and exported) but not executed.
+Post-response scripts that just store a response value become **captures**: `pm.environment.set("t", pm.response.json().access_token)`, the `var t = pm.response.json()…; pm.environment.set("t", t)` idiom, Bruno's `bru.setEnvVar("t", res.body.x)` and `vars:post-response { t: res.body.access_token }`. Other scripts are kept, exported and **run** (see [Scripts](#scripts-eg-log-in-once-then-every-call-is-authorized)).
 
 ```bash
 ferry import ./my-repo                          # postman/collections + postman/environments
@@ -202,7 +232,7 @@ ferry export "My API" ./out --format postman-v2 --with-environments             
 - **Export** follows the v3 file rules: single-quoted `{{vars}}` and special characters, `|-` blocks for multi-line JSON, sanitized unique filenames, and `name:` written only when it differs from the filename.
 - **`--replace`** removes an existing export of that collection first, so deleted requests don't linger (the UI asks first).
 - **Secret environment values** (`type: secret`) are written as empty strings unless you pass `--include-secrets`, because exports usually get committed to git.
-- **Not exported:** gRPC schema source, TLS file paths and HTTP timeouts are local-only; they aren't part of the Postman format. Scripts are imported and exported but not executed.
+- **Not exported:** gRPC schema source, TLS file paths and HTTP timeouts are local-only; they aren't part of the Postman format.
 - **v2.1 export** writes HTTP requests only (v2.1 has no gRPC type; skipped requests are listed), including saved examples that came from a v2.1 import.
 
 ## Scriptable CLI
@@ -220,7 +250,8 @@ ferry ls                                    # collections, requests, environment
 ferry env Staging                           # set the active environment ("none" to clear)
 ferry env ./postman/environments/Staging    # or import an *.environment.yaml and activate it
 ferry run "Demo API/Inventory/Get item" -e Local -v
-ferry run "Demo API/Notes (REST)/Get token"                      # HTTP; applies captures ({{token}})
+ferry run "Demo API/Notes (REST)/Get token"                      # HTTP; runs scripts and captures ({{token}})
+ferry run "Demo API/Notes (REST)/Get token" --no-scripts         # skip pre-request / post-response scripts
 ferry run "Demo API/Notes (REST)/Download report" -o report.pdf  # write the body to a file
 ferry curl "Demo API/Notes (REST)/Echo form"                     # equivalent curl (grpcurl for gRPC)
 ferry preview "Demo API/Notes (REST)/List notes" [--reveal]      # final headers/metadata with sources, TLS, target
@@ -231,7 +262,7 @@ ferry cert rm "*.symmetrydev.com"
 ferry token clear                                                # drop cached OAuth2 tokens
 ```
 
-Responses print as JSON to stdout (streamed gRPC messages print as they arrive; HTTP JSON bodies are pretty-printed, text is printed as-is), and diagnostics go to stderr. The exit code is the gRPC status code on a non-OK gRPC status, and 1 for HTTP 4xx/5xx.
+Responses print as JSON to stdout (streamed gRPC messages print as they arrive; HTTP JSON bodies are pretty-printed, text is printed as-is), and diagnostics go to stderr. The exit code is the gRPC status code on a non-OK gRPC status, and 1 for HTTP 4xx/5xx or when a script throws or a test fails. Script output (`console.log`, variables set, tests) goes to stderr.
 
 ## Data
 
@@ -255,6 +286,7 @@ src/
     workspace.ts        on-disk store + mutations
     resolve.ts          variables, auth inheritance, effective settings
     vars.ts             {{var}} resolution
+    scripts.ts          pre-request / post-response scripts (pm.*, bru.*, JS or TS)
   grpc/
     reflection.ts       server reflection client (v1 → v1alpha fallback)
     proto-files.ts      .proto and protoset loading
