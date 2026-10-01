@@ -449,6 +449,15 @@ export function KVEditorModal({
       if (key.escape) return onSave(rows.filter((r) => r.key || r.value));
       if (key.ctrl && input === 's') return onSave(rows.filter((r) => r.key || r.value));
       if ((key.ctrl || key.meta) && !key.escape) return;
+      // Typing on an empty cell fills it in place (letters are text there, not commands). A paste arrives as one
+      // multi-character input: put it in the selected cell, empty or not, instead of dropping it.
+      const typed = input.replace(/[\r\n]+/g, '');
+      const cellEmpty = rows.length > 0 && !rows[current]![column];
+      if (rows.length && typed && (input.length > 1 || (cellEmpty && input !== ' ')) && !key.return && !key.tab && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input)) {
+        setDraft(typed);
+        setEditing(true);
+        return;
+      }
       if (key.upArrow || input === 'k') return setIndex(clamp(current - 1, 0, rows.length - 1));
       if (key.downArrow || input === 'j') return setIndex(clamp(current + 1, 0, rows.length - 1));
       if (key.leftArrow || key.rightArrow || key.tab) return setColumn((c) => (c === 'key' ? 'value' : 'key'));
@@ -476,9 +485,10 @@ export function KVEditorModal({
   useInput(
     (_, key) => {
       if (key.escape) {
+        // esc keeps what was typed or pasted (like esc on the table saves it); ctrl+c discards the whole edit
         setEditing(false);
-        // drop rows that were added and abandoned
-        setRows((prev) => prev.filter((r, j) => j !== current || r.key || r.value));
+        // ...and drops rows that were added and left empty
+        setRows((prev) => prev.map((r, j) => (j === current ? { ...r, [column]: draft } : r)).filter((r, j) => j !== current || r.key || r.value));
       }
       if (key.tab) {
         update(current, { [column]: draft });
@@ -499,8 +509,8 @@ export function KVEditorModal({
       height={height}
       footer={
         editing
-          ? 'enter: apply · tab: next cell · esc: discard'
-          : `a: add · enter: edit · ←→: column · space: enable/disable · d: delete${allowSecret ? ' · s: secret · v: reveal' : ''} · esc: save & close · ctrl+c: discard`
+          ? 'enter / esc: apply · tab: next cell · ctrl+c: discard all changes'
+          : `a: add · enter: edit · type on <empty>: fill · ←→: column · space: enable/disable · d: delete${allowSecret ? ' · s: secret · v: reveal' : ''} · esc: save & close · ctrl+c: discard`
       }
     >
       {hint ? (
@@ -536,9 +546,10 @@ export function KVEditorModal({
           let text = row[col];
           if (col === 'value' && row.secret && !reveal) text = text ? '••••••••' : '';
           const active = selected && column === col;
+          // empty cells stand out so missing values are easy to spot (and can be typed into directly)
           return (
-            <Text inverse={active} dimColor={row.disabled} wrap="truncate-end">
-              {padEnd(text || (col === 'key' ? '<key>' : ''), w)}
+            <Text inverse={active} dimColor={row.disabled} color={text ? theme.vars.set : theme.vars.empty} underline={!text} wrap="truncate-end">
+              {padEnd(text || (col === 'key' ? '<key>' : '<empty>'), w)}
             </Text>
           );
         };

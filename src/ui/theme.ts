@@ -23,6 +23,8 @@ export const theme = {
     bidi_streaming: 'magenta',
   } as Record<string, string>,
   selection: { bg: '#3a3a3a' },
+  /** `{{vars}}` with a value / empty or undefined (also underlined), in the message and the variables table */
+  vars: { set: '#d97757', empty: 'red' },
 } as const;
 
 export const icons = {

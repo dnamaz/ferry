@@ -330,9 +330,10 @@ export class Workspace {
 
   /**
    * Sets a variable in `environment` (default: the active one), falling back
-   * to the collection's variables. Returns a description of where it went.
+   * to the collection's variables (or straight to them with `scope: 'collection'`).
+   * Returns a description of where it went.
    */
-  setVariable(name: string, value: string, opts: { collectionId?: string; environment?: Environment } = {}): string | undefined {
+  setVariable(name: string, value: string, opts: { collectionId?: string; environment?: Environment; scope?: 'environment' | 'collection' } = {}): string | undefined {
     const upsert = <T extends { key: string; value: string }>(list: T[], make: () => T) => {
       const existing = list.find((v) => v.key === name);
       if (existing) {
@@ -341,7 +342,7 @@ export class Workspace {
         if ('enabled' in existing) (existing as { enabled?: boolean }).enabled = true;
       } else list.push(make());
     };
-    const env = opts.environment ?? this.activeEnvironment;
+    const env = opts.scope === 'collection' ? undefined : (opts.environment ?? this.activeEnvironment);
     if (env) {
       upsert(env.values, () => ({ key: name, value, enabled: true, type: 'default' }));
       this.saveEnvironment(env);
@@ -354,6 +355,21 @@ export class Workspace {
       return `collection "${c.name}"`;
     }
     return undefined;
+  }
+
+  /** Removes a variable from the environment (default: the active one) or the collection. */
+  unsetVariable(name: string, opts: { collectionId?: string; environment?: Environment; scope?: 'environment' | 'collection' } = {}): void {
+    const env = opts.scope === 'collection' ? undefined : (opts.environment ?? this.activeEnvironment);
+    if (env) {
+      if (!env.values.some((v) => v.key === name)) return;
+      env.values = env.values.filter((v) => v.key !== name);
+      return this.saveEnvironment(env);
+    }
+    const c = opts.collectionId ? this.collection(opts.collectionId) : undefined;
+    if (c?.variables.some((v) => v.key === name)) {
+      c.variables = c.variables.filter((v) => v.key !== name);
+      this.saveCollection(c);
+    }
   }
 
   setActiveEnvironment(id: string | undefined): void {

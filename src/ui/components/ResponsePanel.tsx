@@ -2,10 +2,17 @@ import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import type { CallResult } from '../../grpc/invoke.js';
 import { type HttpResult, jsonBody, looksBinary } from '../../http/client.js';
+import type { ScriptOutcome, ScriptPhase } from '../../core/scripts.js';
 import { theme } from '../theme.js';
 import { formatBytes, formatDuration, truncate } from '../util.js';
 
-export type AnyResult = CallResult | HttpResult;
+export interface ScriptRun {
+  phase: ScriptPhase;
+  outcome: ScriptOutcome;
+  /** hides secret values */
+  mask: (name: string, value: string) => string;
+}
+export type AnyResult = (CallResult | HttpResult) & { scripts?: ScriptRun[] };
 export const isHttpResult = (r: AnyResult | undefined): r is HttpResult => !!r && 'kind' in r && r.kind === 'http';
 import { JsonLine } from './JsonLine.js';
 import { type Segment, formatPath, jsonLines, valueToString } from '../../core/jsonpath.js';
@@ -35,6 +42,39 @@ export interface ResponseLine {
 /** Lines shown in the response body for the given tab. */
 export function responseLines(result: AnyResult | undefined, tab: ResponseTab): ResponseLine[] {
   if (!result) return [];
+  const lines = tab === 'metadata' ? [...bodyLines(result, tab), ...scriptLines(result.scripts)] : [...scriptErrors(result.scripts), ...bodyLines(result, tab)];
+  return lines;
+}
+
+/** Script errors and failed tests, shown above the response body. */
+function scriptErrors(runs: ScriptRun[] = []): ResponseLine[] {
+  const lines: ResponseLine[] = runs.flatMap(({ outcome }) => [
+    ...(outcome.error ? [{ text: `// ${outcome.error}`, kind: 'error' as const }] : []),
+    ...outcome.tests.filter((t) => !t.passed).map((t) => ({ text: `// ✗ test "${t.name}": ${t.error}`, kind: 'error' as const })),
+  ]);
+  return lines.length ? [...lines, { text: '// (m: script output)', kind: 'comment' }, { text: '', kind: 'comment' }] : [];
+}
+
+function scriptLines(runs: ScriptRun[] = []): ResponseLine[] {
+  return runs.flatMap(({ phase, outcome, mask }): ResponseLine[] => {
+    const lines: ResponseLine[] = [{ text: '', kind: 'comment' }, { text: `// ${phase === 'before' ? 'pre-request' : 'post-response'} scripts (${outcome.ran})`, kind: 'comment' }];
+    for (const s of outcome.set) {
+      lines.push(
+        s.value === undefined
+          ? { text: `unset {{${s.name}}}`, kind: 'meta' }
+          : { text: `set {{${s.name}}}: ${mask(s.name, s.value)}${s.where ? `  (${s.where})` : '  (not stored: no environment or collection)'}`, kind: s.where ? 'meta' : 'error' },
+      );
+    }
+    for (const [name, value] of Object.entries(outcome.locals)) lines.push({ text: `local {{${name}}}: ${mask(name, value)}`, kind: 'meta' });
+    for (const t of outcome.tests) lines.push({ text: `${t.passed ? '✓' : '✗'} ${t.name}${t.error ? `: ${t.error}` : ''}`, kind: t.passed ? 'text' : 'error' });
+    for (const l of outcome.logs) lines.push({ text: l, kind: 'text' });
+    if (outcome.error) lines.push({ text: outcome.error, kind: 'error' });
+    if (lines.length === 2) lines.push({ text: '(no output)', kind: 'comment' });
+    return lines;
+  });
+}
+
+function bodyLines(result: AnyResult, tab: ResponseTab): ResponseLine[] {
   if (isHttpResult(result)) return httpLines(result, tab);
   if (tab === 'metadata') {
     const section = (title: string, pairs: Array<[string, string]>): ResponseLine[] => [

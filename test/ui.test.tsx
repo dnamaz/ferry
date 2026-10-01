@@ -48,4 +48,12 @@ describe('App renders', () => {
     expect(out).toContain('List notes');
     expect(out).toContain('GET');
   });
+
+  it('with a Scripts row on gRPC and HTTP requests', () => {
+    expect(frame(workspaceWith('Say hello'))).toMatch(/Scripts\s+none · enter to add a JS\/TS script/);
+    const ws = workspaceWith('List notes');
+    const item = [...walkItems(ws.collections[0]!.items)].find((x) => x.item.name === 'List notes')!.item;
+    if (item.type === 'http') item.scripts = [{ type: 'afterResponse', code: "bru.setEnvVar('a', 1);\nbru.setEnvVar('b', 2);" }];
+    expect(frame(ws)).toMatch(/Scripts\s+post-response \(2 lines\)/);
+  });
 });

@@ -12,6 +12,7 @@ import {
   type HttpRequest,
   type KV,
   type SchemaSource,
+  type Script,
   type SendableRequest,
   type TlsFiles,
   type CertificateEntry,
@@ -24,14 +25,28 @@ import {
   walkItems,
 } from '../core/model.js';
 import { evaluateCaptures, evaluateHttpCaptures } from '../core/captures.js';
+import {
+  type ScriptOutcome,
+  type ScriptPhase,
+  grpcRequestInfo,
+  grpcResponseInfo,
+  httpRequestInfo,
+  httpResponseInfo,
+  isPhase,
+  runPhase,
+  scriptsFor,
+  secretMask,
+  summarizeOutcome,
+  withLocals,
+} from '../core/scripts.js';
 import { type Segment, formatPath, leaves, normalizeKey, setInJsonText, suggestVariableName, valueToString } from '../core/jsonpath.js';
-import { type OAuthConfig, effectiveAuth, oauthFields, resolveHttpRequest, resolveRequest } from '../core/resolve.js';
+import { type OAuthConfig, buildScopes, effectiveAuth, oauthFields, resolveHttpRequest, resolveRequest } from '../core/resolve.js';
 import { cachedToken, describeExpiry, getToken, withToken } from '../http/oauth.js';
 import { previewGrpc, previewHttp } from '../core/preview.js';
 import { parseTarget } from '../grpc/connection.js';
 import { type HttpHandle, jsonBody, sendHttp } from '../http/client.js';
 import { toCurl } from '../http/curl.js';
-import { referencedVars } from '../core/vars.js';
+import { createResolver, referencedVars } from '../core/vars.js';
 import type { Workspace } from '../core/workspace.js';
 import { type DiscoverOptions, cacheKey, discover } from '../grpc/discovery.js';
 import { type CallHandle, type CallResult, invoke } from '../grpc/invoke.js';
@@ -55,7 +70,7 @@ import {
 } from './components/Modals.js';
 import { HTTP_FIELDS, REQUEST_FIELDS, type RequestField, RequestPanel } from './components/RequestPanel.js';
 import { HttpRequestPanel, METHOD_COLORS, bodyText } from './components/HttpRequestPanel.js';
-import { type AnyResult, type ResponseTab, ResponsePanel, isHttpResult, responseLines } from './components/ResponsePanel.js';
+import { type AnyResult, type ResponseTab, ResponsePanel, type ScriptRun, isHttpResult, responseLines } from './components/ResponsePanel.js';
 import { type SidebarTab, Sidebar, buildServiceRows, buildTree } from './components/Sidebar.js';
 import { TabBar } from './components/TabBar.js';
 import { copyToClipboard, editInExternalEditor } from './terminal.js';
@@ -81,6 +96,37 @@ interface Draft {
   scratch?: boolean;
 }
 
+function scriptKind(s: Script): string {
+  return /test/i.test(s.type) && !/after|post/i.test(s.type) ? 'tests' : /before|pre/i.test(s.type) ? 'pre-request' : 'post-response';
+}
+
+function scriptTemplate(phase: ScriptPhase, kind: 'grpc' | 'http'): string {
+  if (phase === 'before') {
+    return [
+      '// Pre-request script: JavaScript or TypeScript, runs before the request is sent.',
+      '//',
+      "//   pm.variables.set('requestId', crypto.randomUUID());   // this request only: {{requestId}}",
+      "//   bru.setEnvVar('startedAt', new Date().toISOString());  // saved to the active environment",
+      '',
+    ].join('\n');
+  }
+  const body = kind === 'grpc' ? 'the response message (an array for streams)' : 'the JSON body';
+  return [
+    '// Post-response script: JavaScript or TypeScript, runs after every response.',
+    '// Variables you set are saved to the active environment (else the collection),',
+    '// so {{accessToken}} in metadata/headers picks them up on the next send.',
+    '//',
+    `//   const body = res.getBody();                        // ${body}`,
+    "//   bru.setEnvVar('accessToken', body.access_token);",
+    '//',
+    kind === 'grpc'
+      ? "//   pm.environment.set('accessToken', pm.response.messages.idx(0).data.accessToken);"
+      : "//   pm.environment.set('accessToken', pm.response.json().access_token);",
+    "//   pm.test('ok', () => pm.expect(pm.response.code).to.equal(" + (kind === 'grpc' ? '0' : '200') + '));',
+    '',
+  ].join('\n');
+}
+
 type SchemaState = { state: 'loading' | 'ready' | 'error'; schema?: Schema; error?: string };
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -101,6 +147,9 @@ CHAINING (response pane: enter to select a value)
   u             use in another open request (pick the field; best match preselected)
   v             save as {{variable}}         y        copy value
   Captures (request field) re-save values after every successful call.
+  Scripts (request field) run JS/TS before the request / after the response:
+    bru.setEnvVar('accessToken', res.getBody().access_token)
+    pm.environment.set('accessToken', pm.response.json().access_token)
 
 TABS
   [ / ]         previous / next tab          T        list open tabs (fuzzy)
@@ -295,10 +344,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
   const requestWidth = sideBySide ? Math.floor(rightWidth / 2) : rightWidth;
   const responseWidth = rightWidth - (sideBySide ? requestWidth : 0);
   const panelsHeight = bodyHeight - 1; // one row for the tab bar
-  const requestHeight = sideBySide ? panelsHeight : clamp(Math.floor(panelsHeight * 0.56), 13, Math.max(13, panelsHeight - 6));
-  const responseHeight = sideBySide ? panelsHeight : Math.max(6, panelsHeight - requestHeight);
   const sidebarList = Math.max(1, bodyHeight - 4);
-  const responseBody = Math.max(1, responseHeight - 4);
   const modalWidth = Math.min(cols - 4, 96);
   const modalHeight = Math.max(8, Math.min(bodyHeight - 2, 32));
 
@@ -329,6 +375,16 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
   const request = requestById(activeId);
   const grpcReq = request?.type === 'grpc' ? request : undefined;
   const httpReq = request?.type === 'http' ? request : undefined;
+
+  /** Rows of the request pane for the active request (HTTP hides Path vars when unused). */
+  const requestFields: readonly RequestField[] = httpReq
+    ? HTTP_FIELDS.filter((f) => f !== 'pathvars' || pathVariableNames(httpReq.url).length > 0 || httpReq.pathVariables.length > 0)
+    : REQUEST_FIELDS;
+  // Stacked: tall enough for every field row plus a line of content (header, separator, borders: 5), when the terminal allows.
+  const minRequest = requestFields.length + 5;
+  const requestHeight = sideBySide ? panelsHeight : clamp(Math.floor(panelsHeight * 0.56), minRequest, Math.max(minRequest, panelsHeight - 6));
+  const responseHeight = sideBySide ? panelsHeight : Math.max(6, panelsHeight - requestHeight);
+  const responseBody = Math.max(1, responseHeight - 4);
   const loc = activeId ? ws.locate(activeId) : undefined;
   const collection = loc?.collection;
   const ancestors = loc?.ancestors ?? [];
@@ -339,11 +395,34 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [grpcReq, collection, env, version],
   );
+  const grpcResolved = resolved;
   const httpResolved = useMemo(
     () => (httpReq ? resolveHttpRequest(httpReq, { collection, ancestors, environment: env, certificates: ws.settings.certificates }) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [httpReq, collection, env, version],
   );
+
+  /** `{{var}}` values for the active request (environment > folder > collection), for coloring the message. */
+  const varLookup = useMemo(
+    () => createResolver(buildScopes(collection, ancestors, env)).lookup,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [collection, env, version, activeId],
+  );
+
+  /** Sets a `{{var}}` from the message editor where it's already defined, else the environment (else the collection). */
+  const setMessageVar = (name: string, value: string) => {
+    const nearestFolder = [...ancestors].reverse().find((f) => f.variables?.some((v) => v.key === name));
+    let where: string | undefined;
+    if (env?.values.some((v) => v.key === name)) where = ws.setVariable(name, value, { environment: env });
+    else if (nearestFolder && collection) {
+      nearestFolder.variables = nearestFolder.variables!.map((v) => (v.key === name ? { ...v, value, disabled: undefined } : v));
+      ws.saveCollection(collection);
+      where = `folder "${nearestFolder.name}"`;
+    } else if (collection?.variables.some((v) => v.key === name)) where = ws.setVariable(name, value, { collectionId: collection.id, scope: 'collection' });
+    else where = ws.setVariable(name, value, { collectionId: collection?.id });
+    if (!where) return setToast(`Nowhere to store {{${name}}}: select an environment or save the request to a collection`, theme.warn);
+    setToast(value ? `{{${name}}} = ${truncate(value, 40)} in ${where}` : `{{${name}}} cleared in ${where}`, theme.ok);
+  };
 
   /** Variables the URL needs that no scope defines; nothing can be sent until they resolve. */
   const activeUrl = resolved?.url ?? httpResolved?.url;
@@ -717,12 +796,17 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
 
   const sendHttpRequest = async () => {
     const id = activeId;
-    const r = httpResolved;
+    let r = httpResolved;
     const req = httpReq;
     if (!id || !r || !req) return;
     if (handles.current[id]) return setToast('Request already running — ctrl+c to cancel', theme.warn);
     if (!req.url.trim()) return setToast('URL is empty', theme.warn);
-    if (urlMissingMessage) return setToast(urlMissingMessage, theme.warn);
+    const scriptEnv = env;
+    const pre = await runScriptPhase('before', req, httpRequestInfo(req.name, r));
+    if (pre?.error) return scriptFailed(id, 'http', pre);
+    // Pre-request scripts may have changed variables: resolve again.
+    if (pre) r = resolveHttpRequest(req, { collection, ancestors, environment: withLocals(scriptEnv, pre.locals), certificates: ws.settings.certificates });
+    if (urlMissingMessage && referencedVars(r.url).some((v) => !v.startsWith('$'))) return setToast(urlMissingMessage, theme.warn);
     if (r.missingVars.length) setToast(`Unresolved variables: ${r.missingVars.map((v) => `{{${v}}}`).join(', ')}`, theme.warn);
     else if (r.warnings.length) setToast(r.warnings.join(' · '), theme.warn);
     setResponseOffset(0, id);
@@ -739,22 +823,33 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     }
     const handle = sendHttp(r, (res) => setResults((p) => ({ ...p, [id]: res })), { oauthToken });
     handles.current[id] = handle;
-    const final = await handle.done;
+    const final: AnyResult = await handle.done;
     delete handles.current[id];
     setResults((p) => ({ ...p, [id]: final }));
+    const post = final.state === 'done' && final.status !== undefined ? await runScriptPhase('after', req, httpRequestInfo(req.name, r), httpResponseInfo(final)) : undefined;
+    const runs = scriptRuns(pre, post, scriptEnv);
+    if (runs.length) setResults((p) => ({ ...p, [id]: { ...final, scripts: runs } }));
     const ok = final.state === 'done' && final.status !== undefined && final.status < 300;
-    if (ok && req.captures?.length) applyHttpCaptures(req.captures, jsonBody(final), collection?.id);
+    const captures = ownCaptures(req);
+    if (ok && captures.length) applyHttpCaptures(captures, jsonBody(final), collection?.id, scriptSummary(runs));
+    else reportScripts(runs);
   };
 
   const send = async () => {
     if (httpReq) return sendHttpRequest();
     const id = activeId;
     const request = grpcReq;
+    let resolved = grpcResolved;
     if (!id || !request || !resolved) return setToast('Open or create a request first', theme.warn);
     if (handles.current[id]) return setToast('Call already running — ctrl+c to cancel', theme.warn);
     if (!resolved.url) return setToast('URL is empty', theme.warn);
-    if (urlMissingMessage) return setToast(urlMissingMessage, theme.warn);
     if (!resolved.methodPath) return setToast('Pick a method first (Method field or Services tab)', theme.warn);
+    const scriptEnv = env;
+    const pre = await runScriptPhase('before', request, grpcRequestInfo(request.name, resolved));
+    if (pre?.error) return scriptFailed(id, 'grpc', pre);
+    // Pre-request scripts may have changed variables: resolve again.
+    if (pre) resolved = resolveRequest(request, { collection, ancestors, environment: withLocals(scriptEnv, pre.locals), certificates: ws.settings.certificates });
+    if (urlMissingMessage && referencedVars(resolved.url).some((v) => !v.startsWith('$'))) return setToast(urlMissingMessage, theme.warn);
     if (resolved.missingVars.length) setToast(`Unresolved variables: ${resolved.missingVars.map((v) => `{{${v}}}`).join(', ')}`, theme.warn);
     else if (resolved.warnings.length) setToast(resolved.warnings.join(' · '), theme.warn);
 
@@ -787,11 +882,45 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       onUpdate: (r) => setResults((p) => ({ ...p, [id]: r })),
     });
     handles.current[id] = handle;
-    const final = await handle.done;
+    const final: AnyResult = await handle.done;
     delete handles.current[id];
     setResults((p) => ({ ...p, [id]: final }));
-    if (final.state === 'done' && request.captures?.length) applyCaptures(request.captures, final.messages, collection?.id);
+    const post = final.state !== 'cancelled' && final.code !== undefined ? await runScriptPhase('after', request, grpcRequestInfo(request.name, resolved), grpcResponseInfo(final)) : undefined;
+    const runs = scriptRuns(pre, post, scriptEnv);
+    if (runs.length) setResults((p) => ({ ...p, [id]: { ...final, scripts: runs } }));
+    const captures = ownCaptures(request);
+    if (final.state === 'done' && captures.length) applyCaptures(captures, final.messages, collection?.id, scriptSummary(runs));
+    else reportScripts(runs);
   };
+
+  // --- scripts ------------------------------------------------------------------------
+  const runScriptPhase = (phase: ScriptPhase, request: SendableRequest, info: ReturnType<typeof httpRequestInfo>, response?: ReturnType<typeof httpResponseInfo>) =>
+    runPhase(phase, { store: ws, request, collection, ancestors, environment: env, info, response });
+  const scriptRuns = (pre: ScriptOutcome | undefined, post: ScriptOutcome | undefined, environment: Environment | undefined): ScriptRun[] =>
+    [pre && { phase: 'before' as const, outcome: pre }, post && { phase: 'after' as const, outcome: post }]
+      .filter((x) => !!x)
+      .map((x) => ({ ...x, mask: secretMask(environment) }));
+  const scriptSummary = (runs: ScriptRun[]) => {
+    const parts = runs.map((r) => summarizeOutcome(r.outcome, r.mask)).filter((x) => x.text);
+    return parts.length ? { text: parts.map((x) => x.text).join(' · '), ok: parts.every((x) => x.ok) } : undefined;
+  };
+  const reportScripts = (runs: ScriptRun[]) => {
+    const summary = scriptSummary(runs);
+    if (summary) setToast(summary.text, summary.ok ? theme.ok : theme.warn);
+  };
+  const scriptFailed = (id: string, kind: 'http' | 'grpc', pre: ScriptOutcome) => {
+    const startedAt = Date.now();
+    const error = `Not sent: ${pre.error}`;
+    const scripts = scriptRuns(pre, undefined, env);
+    const result: AnyResult =
+      kind === 'http'
+        ? { kind: 'http', state: 'error', headers: [], body: Buffer.alloc(0), startedAt, durationMs: 0, error, scripts }
+        : { state: 'error', headers: [], trailers: [], messages: [], sent: 0, startedAt, durationMs: 0, error, scripts };
+    setResults((p) => ({ ...p, [id]: result }));
+    setToast(error, theme.error);
+  };
+  /** Captures derived from a script that now runs itself are skipped, so it doesn't happen twice. */
+  const ownCaptures = (r: SendableRequest) => (r.captures ?? []).filter((c) => c.source !== 'script');
 
   const cancelRunning = (): boolean => {
     const h = activeId ? handles.current[activeId] : undefined;
@@ -835,12 +964,14 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
   };
 
   // --- chaining: response values → variables / other requests ---------------------------
-  const applyHttpCaptures = (captures: Capture[], body: unknown, collectionId?: string) => {
-    if (body === undefined) return setToast('Captures skipped: the response body is not JSON', theme.warn);
-    reportCaptures(evaluateHttpCaptures(captures, body), collectionId);
+  type Extra = { text: string; ok: boolean } | undefined;
+  const applyHttpCaptures = (captures: Capture[], body: unknown, collectionId?: string, extra?: Extra) => {
+    if (body === undefined) return setToast(['Captures skipped: the response body is not JSON', extra?.text].filter(Boolean).join(' · '), theme.warn);
+    reportCaptures(evaluateHttpCaptures(captures, body), collectionId, extra);
   };
-  const applyCaptures = (captures: Capture[], messages: unknown[], collectionId?: string) => reportCaptures(evaluateCaptures(captures, messages), collectionId);
-  const reportCaptures = (results: ReturnType<typeof evaluateCaptures>, collectionId?: string) => {
+  const applyCaptures = (captures: Capture[], messages: unknown[], collectionId?: string, extra?: Extra) =>
+    reportCaptures(evaluateCaptures(captures, messages), collectionId, extra);
+  const reportCaptures = (results: ReturnType<typeof evaluateCaptures>, collectionId?: string, extra?: Extra) => {
     const set: string[] = [];
     const failed: string[] = [];
     let where: string | undefined;
@@ -853,10 +984,10 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       if (where) set.push(`{{${r.variable}}} = ${truncate(r.value, 40)}`);
       else failed.push(`{{${r.variable}}}: no environment or collection to store it in`);
     }
-    if (set.length || failed.length) {
+    if (set.length || failed.length || extra) {
       setToast(
-        [set.length ? `Captured ${set.join(', ')} in ${where}` : '', failed.length ? `Capture failed: ${failed.join('; ')}` : ''].filter(Boolean).join(' · '),
-        failed.length ? theme.warn : theme.ok,
+        [set.length ? `Captured ${set.join(', ')} in ${where}` : '', failed.length ? `Capture failed: ${failed.join('; ')}` : '', extra?.text ?? ''].filter(Boolean).join(' · '),
+        failed.length || (extra && !extra.ok) ? theme.warn : theme.ok,
       );
     }
   };
@@ -1064,7 +1195,47 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       onSave: (rows) => {
         pop();
         const captures = rows.filter((r) => r.key && r.value).map((r) => ({ variable: r.key, path: r.value }));
-        updateRequest(activeId, (r) => ({ ...r, captures: captures.length ? captures : undefined }));
+        updateAny(activeId, (r) => ({ ...r, captures: captures.length ? captures : undefined }));
+      },
+    });
+  };
+
+  const editScripts = () => {
+    if (!request) return;
+    const own = request.scripts ?? [];
+    const lines = (code: string) => `${code.split('\n').length} lines`;
+    type Choice = { index: number } | { phase: ScriptPhase };
+    const items: PickerItem<Choice>[] = own.map((script, index) => ({ label: scriptKind(script), value: { index }, hint: lines(script.code) }));
+    for (const phase of ['after', 'before'] as const) {
+      if (!own.some((s) => isPhase(s, phase))) items.push({ label: `New ${phase === 'before' ? 'pre-request' : 'post-response'} script`, value: { phase }, hint: 'JavaScript or TypeScript' });
+    }
+    const inherited = (['before', 'after'] as const).flatMap((phase) => scriptsFor(phase, { ...request, scripts: [] }, ancestors, collection));
+    push({
+      type: 'picker',
+      title: `Scripts · ${request.name}`,
+      items: items as PickerItem<unknown>[],
+      footer: `enter: edit in $EDITOR (empty it to delete)${inherited.length ? ` · also runs: ${inherited.map((p) => `${p.from} ${scriptKind(p.script)}`).join(', ')}` : ''}`,
+      onSelect: (v) => {
+        pop();
+        const choice = v as Choice;
+        const existing = 'index' in choice ? own[choice.index] : undefined;
+        const phase: ScriptPhase = existing ? (isPhase(existing, 'before') ? 'before' : 'after') : (choice as { phase: ScriptPhase }).phase;
+        const template = scriptTemplate(phase, request.type);
+        const res = editInExternalEditor(existing?.code ?? template, '.ts');
+        setSpin((n) => n + 1);
+        if (res.error) return setToast(res.error, theme.error);
+        if (res.text === undefined) return;
+        const code = res.text.trim() ? res.text : '';
+        const blank = !code.split('\n').some((l) => l.trim() && !l.trim().startsWith('//'));
+        const next: Script[] = [...own];
+        if (existing) {
+          if (blank) next.splice(next.indexOf(existing), 1);
+          else next[next.indexOf(existing)] = { ...existing, code };
+        } else if (!blank) {
+          next.push({ type: phase === 'before' ? 'beforeRequest' : 'afterResponse', code, language: 'text/javascript' });
+        }
+        updateAny(activeId, (r) => ({ ...r, scripts: next.length ? next : undefined }));
+        setToast(blank ? (existing ? 'Script removed (ctrl+s to keep)' : 'No script added') : 'Script updated — it runs on the next send (ctrl+s to keep)', theme.ok);
       },
     });
   };
@@ -1877,11 +2048,6 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     push({ type: 'text', title: `What will be sent · ${request.name}`, text: text(false), altText: text(true), altLabel: 'reveal secrets', copy: text(true), wrap: true });
   };
 
-  /** Rows of the request pane for the active request (HTTP hides Path vars when unused). */
-  const requestFields: readonly RequestField[] = httpReq
-    ? HTTP_FIELDS.filter((f) => f !== 'pathvars' || pathVariableNames(httpReq.url).length > 0 || httpReq.pathVariables.length > 0)
-    : REQUEST_FIELDS;
-
   const requestKeys = (input: string, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
     if (!request) {
       if (key.return) chooseKind('New scratch request', (kind) => newScratch({}, kind));
@@ -1929,6 +2095,8 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         return editSettings();
       case 'captures':
         return editCaptures();
+      case 'scripts':
+        return editScripts();
       case 'message':
         if (request.type === 'http') {
           if (request.body.type === 'urlencoded' || request.body.type === 'formdata') return editBodyFields(request.body.type);
@@ -2162,6 +2330,14 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     ? request.captures.map((c) => `{{${c.variable}}} ← ${c.path}${c.source === 'script' ? ' (from script)' : ''}`).join(', ')
     : 'none · pick a response value (enter in the response pane) to add';
 
+  const scriptsSummary = (() => {
+    if (!request) return '';
+    const own = (request.scripts ?? []).map((s) => `${scriptKind(s)} (${s.code.split('\n').length} lines)`);
+    const inherited = (['before', 'after'] as const).flatMap((phase) => scriptsFor(phase, { ...request, scripts: [] }, ancestors, collection)).length;
+    const extra = inherited ? ` + ${inherited} from folder/collection` : '';
+    return own.length ? own.join(', ') + extra : `none${extra} · enter to add a JS/TS script (e.g. save a token from the response)`;
+  })();
+
   const servicesStatus = {
     state: (httpReq ? 'error' : urlMissingMessage ? 'error' : (schemaState?.state ?? 'idle')) as 'idle' | 'loading' | 'ready' | 'error',
     message: httpReq ? 'Service discovery is for gRPC requests. Switch to a gRPC tab to browse its services.' : (urlMissingMessage ?? schemaState?.error),
@@ -2170,7 +2346,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
 
   const hints = (() => {
     if (editing) return 'enter: apply · esc: cancel · ctrl+r: apply & send';
-    if (messageEditing) return 'esc: done · ctrl+f: format · ctrl+r: send · ctrl+s: save';
+    if (messageEditing) return 'esc: done · enter on {{var}}: set value · ctrl+f: format · ctrl+r: send · ctrl+s: save';
     if (focus === 'sidebar' && sidebarTab === 'collections')
       return 'enter: open · n: request · f: folder · c: collection · r: rename · d: delete · v: vars · a: auth · H: headers · s: settings · x: export';
     if (focus === 'sidebar') return 'enter: use method · d: describe · a: add to collection · R: refresh';
@@ -2402,10 +2578,13 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
                 messageEditing={messageEditing}
                 onMessageChange={(v) => updateHttp(activeId, (r) => ({ ...r, body: { ...r.body, content: v } }))}
                 onMessageExit={() => setMessageEditing(false)}
+                vars={varLookup}
+                onSetVar={setMessageVar}
                 resolvedUrl={httpResolved?.url}
                 authSummary={authSummary}
                 settingsSummary={settingsSummary}
                 capturesSummary={capturesSummary}
+                scriptsSummary={scriptsSummary}
               />
             ) : (
               <RequestPanel
@@ -2423,11 +2602,14 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
                 messageEditing={messageEditing}
                 onMessageChange={(v) => updateRequest(activeId, (r) => ({ ...r, message: v }))}
                 onMessageExit={() => setMessageEditing(false)}
+                vars={varLookup}
+                onSetVar={setMessageVar}
                 method={method}
                 resolvedUrl={resolved?.url}
                 authSummary={authSummary}
                 settingsSummary={settingsSummary}
                 capturesSummary={capturesSummary}
+                scriptsSummary={scriptsSummary}
               />
             )}
             <ResponsePanel

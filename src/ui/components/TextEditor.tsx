@@ -1,8 +1,9 @@
-import React, { useLayoutEffect, useReducer, useRef } from 'react';
+import React, { useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
 import { clamp, tryFormatJson } from '../util.js';
-import { JsonLine } from './JsonLine.js';
+import { CursorLine, JsonLine, PlainLine, type VarLookup, varAt } from './JsonLine.js';
+import { TextField } from './TextField.js';
 
 interface Props {
   value: string;
@@ -13,6 +14,10 @@ interface Props {
   onExit?: () => void;
   /** show JSON syntax colors */
   json?: boolean;
+  /** colors `{{vars}}` by whether they have a value */
+  vars?: VarLookup;
+  /** enables enter on a `{{var}}` to set its value in place */
+  onSetVar?: (name: string, value: string) => void;
 }
 
 interface EditorState {
@@ -29,10 +34,12 @@ interface EditorState {
  * Keys: arrows, home/end, ctrl+a/ctrl+e (line start/end), pgup/pgdn,
  * enter (auto-indent), tab (2 spaces), backspace, ctrl+d (delete forward),
  * ctrl+k (kill to end of line), ctrl+u (kill to start), ctrl+f (format JSON), esc (exit).
+ * With `onSetVar`, enter on a `{{var}}` edits the variable's value on a row under the line instead.
  */
-export function TextEditor({ value, onChange, width, height, active, onExit, json = true }: Props) {
+export function TextEditor({ value, onChange, width, height, active, onExit, json = true, vars, onSetVar }: Props) {
   const state = useRef<EditorState>({ text: value, row: 0, col: 0, scroll: 0 });
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const [varEdit, setVarEdit] = useState<{ name: string; draft: string } | undefined>();
 
   // Adopt external changes (template generation, formatting from outside...).
   if (state.current.text !== value) {
@@ -116,6 +123,8 @@ export function TextEditor({ value, onChange, width, height, active, onExit, jso
         return;
       }
       if (key.return) {
+        const onVar = onSetVar ? varAt(line, col) : undefined;
+        if (onVar) return setVarEdit({ name: onVar.name, draft: vars?.(onVar.name) ?? '' });
         const indent = /^\s*/.exec(line)![0];
         const before = line.slice(0, col);
         const after = line.slice(col);
@@ -144,7 +153,13 @@ export function TextEditor({ value, onChange, width, height, active, onExit, jso
       const newCol = lastInserted.length > 1 ? lastInserted.at(-1)!.length : col + text.length;
       commit(lines, newRow, newCol);
     },
-    { isActive: active },
+    { isActive: active && !varEdit },
+  );
+  useInput(
+    (_, key) => {
+      if (key.escape) setVarEdit(undefined);
+    },
+    { isActive: active && !!varEdit },
   );
 
   const s = state.current;
@@ -158,43 +173,50 @@ export function TextEditor({ value, onChange, width, height, active, onExit, jso
   });
 
   const hOffset = active ? Math.max(0, s.col - textWidth + 1) : 0;
-  const visible = lines.slice(s.scroll, s.scroll + height);
+  // The value row takes one line under the cursor line; keep the cursor line on screen above it.
+  const textRows = varEdit ? Math.max(1, height - 1) : height;
+  const scroll = varEdit && s.row >= s.scroll + textRows ? s.row - textRows + 1 : s.scroll;
+  const visible = lines.slice(scroll, scroll + textRows);
 
   return (
     <Box flexDirection="column" width={width} height={height}>
       {visible.map((line, i) => {
-        const lineNo = s.scroll + i;
+        const lineNo = scroll + i;
         const isCursorLine = active && lineNo === s.row;
         return (
-          <Box key={lineNo}>
-            <Text color={isCursorLine ? theme.accent : theme.muted} dimColor={!isCursorLine}>
-              {String(lineNo + 1).padStart(gutter - 1)}{' '}
-            </Text>
-            {isCursorLine ? (
-              <CursorLine line={line} col={s.col} offset={hOffset} width={textWidth} />
-            ) : json ? (
-              <JsonLine line={line} width={textWidth} offset={hOffset} />
-            ) : (
-              <Text wrap="truncate-end">{line.slice(hOffset, hOffset + textWidth) || ' '}</Text>
-            )}
-          </Box>
+          <React.Fragment key={lineNo}>
+            <Box>
+              <Text color={isCursorLine ? theme.accent : theme.muted} dimColor={!isCursorLine}>
+                {String(lineNo + 1).padStart(gutter - 1)}{' '}
+              </Text>
+              {isCursorLine ? (
+                <CursorLine line={line} col={s.col} offset={hOffset} width={textWidth} vars={vars} />
+              ) : json ? (
+                <JsonLine line={line} width={textWidth} offset={hOffset} vars={vars} />
+              ) : (
+                <PlainLine line={line} width={textWidth} offset={hOffset} vars={vars} />
+              )}
+            </Box>
+            {isCursorLine && varEdit ? (
+              <Box>
+                <Text color={theme.accent}>{'  ↳ '}</Text>
+                <Text color={theme.info} bold>{`{{${varEdit.name}}} = `}</Text>
+                <TextField
+                  value={varEdit.draft}
+                  onChange={(draft) => setVarEdit((v) => (v ? { ...v, draft } : v))}
+                  onSubmit={(v) => {
+                    setVarEdit(undefined);
+                    onSetVar?.(varEdit.name, v);
+                  }}
+                  placeholder="value · enter: save · esc: cancel"
+                  width={Math.max(4, width - varEdit.name.length - 12)}
+                />
+              </Box>
+            ) : null}
+          </React.Fragment>
         );
       })}
     </Box>
   );
 }
 
-function CursorLine({ line, col, offset, width }: { line: string; col: number; offset: number; width: number }) {
-  const visible = line.slice(offset, offset + width);
-  const c = col - offset;
-  const before = visible.slice(0, c);
-  const at = visible[c] ?? ' ';
-  const after = visible.slice(c + 1);
-  return (
-    <Text wrap="truncate-end">
-      <Text>{before}</Text>
-      <Text inverse>{at}</Text>
-      <Text>{after}</Text>
-    </Text>
-  );
-}
