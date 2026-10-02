@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { createSecureContext } from 'node:tls';
 import * as grpc from '@grpc/grpc-js';
 import type { GrpcSettings, TlsFiles } from '../core/model.js';
@@ -43,7 +44,65 @@ export function createCredentials(target: Target, settings: GrpcSettings = {}, f
   return grpc.credentials.createFromSecureContext(context, verify);
 }
 
-export function createClient(url: string, settings: GrpcSettings = {}, files: TlsFiles = {}, baseDir?: string): grpc.Client {
+/** When a channel's connection reached each milestone, as performance.now() values. */
+export interface ConnectMarks {
+  /** name resolved; the connection attempt begins */
+  connectStart?: number;
+  /** TCP connected */
+  tcp?: number;
+  /** TLS handshake done (unset on a plaintext connection) */
+  tls?: number;
+  /** HTTP/2 SETTINGS exchanged: the channel is READY */
+  ready?: number;
+}
+
+type SecureConnector = ReturnType<grpc.ChannelCredentials['_createSecureConnector']>;
+
+/**
+ * Wraps credentials so the connection's milestones land in `marks`. grpc-js resolves the name, then
+ * calls the secure connector's waitForReady() (connectStart), opens TCP and passes the connected
+ * socket to connect() (tcp), which resolves once TLS is up (tls). `_createSecureConnector` is
+ * grpc-js's own hook (public in its typings, stable through 1.x); if it is ever missing the
+ * credentials are returned untouched, so the call still works and only the breakdown is lost.
+ */
+function observeConnect(base: grpc.ChannelCredentials, marks: ConnectMarks): grpc.ChannelCredentials {
+  if (typeof base._createSecureConnector !== 'function') return base;
+  const creds = Object.create(base) as grpc.ChannelCredentials;
+  creds._createSecureConnector = (...args): SecureConnector => {
+    const c = base._createSecureConnector(...args);
+    return {
+      waitForReady: () => {
+        marks.connectStart ??= performance.now();
+        return c.waitForReady();
+      },
+      connect: async (socket) => {
+        marks.tcp ??= performance.now();
+        const r = await c.connect(socket);
+        if (r.secure) marks.tls ??= performance.now();
+        return r;
+      },
+      getCallCredentials: () => c.getCallCredentials(),
+      destroy: () => c.destroy(),
+    };
+  };
+  return creds;
+}
+
+/** Records in `marks.ready` when the channel first becomes READY. Stops once READY or shut down. */
+function observeReady(client: grpc.Client, marks: ConnectMarks): void {
+  const ch = client.getChannel();
+  const watch = (state: grpc.connectivityState) =>
+    ch.watchConnectivityState(state, Infinity, (err) => {
+      if (err) return;
+      const next = ch.getConnectivityState(false);
+      if (next === grpc.connectivityState.READY) marks.ready ??= performance.now();
+      else if (next !== grpc.connectivityState.SHUTDOWN) watch(next);
+    });
+  watch(ch.getConnectivityState(false));
+}
+
+/** `marks`, when given, collects the connection's timing (see ConnectMarks). */
+export function createClient(url: string, settings: GrpcSettings = {}, files: TlsFiles = {}, baseDir?: string, marks?: ConnectMarks): grpc.Client {
   const target = parseTarget(url, settings);
   const options: grpc.ChannelOptions = {};
   if (settings.maxResponseMessageSize) options['grpc.max_receive_message_length'] = settings.maxResponseMessageSize;
@@ -52,7 +111,10 @@ export function createClient(url: string, settings: GrpcSettings = {}, files: Tl
     options['grpc.ssl_target_name_override'] = settings.serverName;
     options['grpc.default_authority'] = settings.serverName;
   }
-  return new grpc.Client(target.address, createCredentials(target, settings, files, baseDir), options);
+  const creds = createCredentials(target, settings, files, baseDir);
+  const client = new grpc.Client(target.address, marks ? observeConnect(creds, marks) : creds, options);
+  if (marks) observeReady(client, marks);
+  return client;
 }
 
 export function toMetadata(entries: Array<{ key: string; value: string }>): grpc.Metadata {

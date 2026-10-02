@@ -1,10 +1,12 @@
+import { performance } from 'node:perf_hooks';
 import * as grpc from '@grpc/grpc-js';
 import { fromBinary, fromJson, toBinary, toJson, type JsonValue } from '@bufbuild/protobuf';
 import type { GrpcSettings, TlsFiles } from '../core/model.js';
-import { createClient, deadlineFrom, metadataToPairs, statusName, toMetadata } from './connection.js';
+import { type ConnectMarks, createClient, deadlineFrom, metadataToPairs, statusName, toMetadata } from './connection.js';
 import { type MethodInfo, type Schema, isClientStreaming } from './schema.js';
 import { explainTlsError } from '../core/tls.js';
 import { normalizeJson } from './normalize.js';
+import { type Timing, phasesFrom, serverTime } from '../core/timing.js';
 
 export interface InvokeOptions {
   url: string;
@@ -35,6 +37,8 @@ export interface CallResult {
   sent: number;
   startedAt: number;
   durationMs?: number;
+  /** where the time went (connection phases, wait, receive), once the call has finished */
+  timing?: Timing;
   /** client-side problem (bad JSON, unknown field, connection timeout...) */
   error?: string;
 }
@@ -69,11 +73,34 @@ export function encodeMessages(schema: Schema, method: MethodInfo, text: string)
   });
 }
 
+/**
+ * Phases of one call on a fresh channel. A trailers-only response (an error status with no
+ * headers) has no headers mark, so its whole wait runs to the end and there is no receive.
+ */
+export function callTiming(m: ConnectMarks & { kickoff?: number; headers?: number }, t0: number, end: number, headers: Array<[string, string]>): Timing {
+  const at = (v?: number) => (v === undefined ? undefined : v - t0);
+  return {
+    phases: phasesFrom([
+      ['prepare', at(m.kickoff)],
+      ['dns', at(m.connectStart)],
+      ['connect', at(m.tcp)],
+      ['tls', at(m.tls)],
+      ['http2', at(m.ready)],
+      ['wait', at(m.headers ?? end)],
+      ['receive', m.headers === undefined ? undefined : at(end)],
+    ]),
+    ...serverTime(headers),
+  };
+}
+
 export function invoke(opts: InvokeOptions): CallHandle {
   const { method, schema } = opts;
   const settings = opts.settings ?? {};
   const includeDefaults = settings.includeDefaultFields ?? true;
   const result: CallResult = { state: 'running', headers: [], trailers: [], messages: [], sent: 0, startedAt: Date.now() };
+  const t0 = performance.now();
+  // Each call gets its own channel, so these always describe a fresh connection.
+  const marks: ConnectMarks & { kickoff?: number; headers?: number } = {};
   const update = () => opts.onUpdate?.({ ...result, messages: [...result.messages] });
 
   let call: grpc.ClientUnaryCall | grpc.ClientReadableStream<Uint8Array> | grpc.ClientWritableStream<Uint8Array> | undefined;
@@ -85,7 +112,9 @@ export function invoke(opts: InvokeOptions): CallHandle {
   const finish = (patch: Partial<CallResult>) => {
     if (result.state !== 'running') return;
     Object.assign(result, patch);
+    const end = performance.now();
     result.durationMs = Date.now() - result.startedAt;
+    if (marks.kickoff !== undefined) result.timing = callTiming(marks, t0, end, result.headers);
     client?.close();
     update();
     settle({ ...result });
@@ -99,8 +128,10 @@ export function invoke(opts: InvokeOptions): CallHandle {
 
   const run = async () => {
     const payloads = encodeMessages(schema, method, opts.message);
-    client = createClient(opts.url, settings, opts.tls, opts.baseDir);
+    client = createClient(opts.url, settings, opts.tls, opts.baseDir, marks);
 
+    // Whichever comes first starts the connection: waitForReady here, or the call below.
+    marks.kickoff = performance.now();
     if (settings.connectionTimeout && settings.connectionTimeout > 0) {
       await new Promise<void>((resolve, reject) =>
         client!.waitForReady(deadlineFrom(settings.connectionTimeout)!, (err) =>
@@ -160,6 +191,7 @@ export function invoke(opts: InvokeOptions): CallHandle {
     update();
 
     call.on('metadata', (m: grpc.Metadata) => {
+      marks.headers ??= performance.now();
       result.headers = metadataToPairs(m);
       update();
     });

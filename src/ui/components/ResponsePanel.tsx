@@ -3,6 +3,7 @@ import { Box, Text } from 'ink';
 import type { CallResult } from '../../grpc/invoke.js';
 import { type HttpResult, jsonBody, looksBinary } from '../../http/client.js';
 import type { ScriptOutcome, ScriptPhase } from '../../core/scripts.js';
+import type { PhaseName, Timing } from '../../core/timing.js';
 import { theme } from '../theme.js';
 import { formatBytes, formatDuration, truncate, wrapText } from '../util.js';
 
@@ -17,7 +18,8 @@ export const isHttpResult = (r: AnyResult | undefined): r is HttpResult => !!r &
 import { JsonLine } from './JsonLine.js';
 import { type Segment, formatPath, jsonLines, valueToString } from '../../core/jsonpath.js';
 
-export type ResponseTab = 'messages' | 'metadata';
+export type ResponseTab = 'messages' | 'metadata' | 'timing';
+export const RESPONSE_TABS: ResponseTab[] = ['messages', 'metadata', 'timing'];
 
 interface Props {
   width: number;
@@ -42,6 +44,7 @@ export interface ResponseLine {
 /** Lines shown in the response body for the given tab; error lines wrap to `width` so long messages stay readable. */
 export function responseLines(result: AnyResult | undefined, tab: ResponseTab, width?: number): ResponseLine[] {
   if (!result) return [];
+  if (tab === 'timing') return timingLines(result, width);
   const lines = tab === 'metadata' ? [...bodyLines(result, tab), ...scriptLines(result.scripts)] : [...scriptErrors(result.scripts), ...bodyLines(result, tab)];
   if (!width) return lines;
   return lines.flatMap((l) =>
@@ -57,6 +60,48 @@ function scriptErrors(runs: ScriptRun[] = []): ResponseLine[] {
   ]);
   return lines.length ? [...lines, { text: '// (m: script output)', kind: 'comment' }, { text: '', kind: 'comment' }] : [];
 }
+
+const PHASE_HINT: Record<PhaseName, string> = {
+  prepare: 'build the request',
+  redirect: 'earlier hops',
+  dns: 'resolve host name',
+  connect: 'TCP handshake',
+  tls: 'TLS handshake',
+  http2: 'HTTP/2 settings',
+  send: 'upload body',
+  wait: 'network round trip + server',
+  receive: 'body / stream',
+};
+
+/** The Timing tab: one bar per phase, then what the server says it spent. */
+export function timingLines(result: AnyResult, width = 80): ResponseLine[] {
+  const t: Timing | undefined = result.timing;
+  if (!t) {
+    const why = result.state === 'running' ? 'shown once the response is complete' : 'none: the request never went out';
+    return [{ text: `// timing ${why}`, kind: 'comment' }];
+  }
+  const total = t.phases.reduce((sum, p) => sum + p.ms, 0);
+  const label = Math.max(...t.phases.map((p) => p.name.length)) + 1;
+  const num = Math.max(...t.phases.map((p) => fmtMs(p.ms).length));
+  const hint = Math.max(...t.phases.map((p) => PHASE_HINT[p.name].length));
+  const barMax = Math.max(4, width - label - num - hint - 10);
+  const lines: ResponseLine[] = [
+    { text: `// ${fmtMs(total)} total · ${t.reused ? 'reused an open connection (no dns/connect/tls)' : 'new connection'}`, kind: 'comment' },
+    { text: '', kind: 'comment' },
+  ];
+  for (const p of t.phases) {
+    const bar = total > 0 ? '█'.repeat(Math.round((p.ms / total) * barMax)) || (p.ms > 0 ? '▏' : '') : '';
+    lines.push({ text: `${`${p.name}:`.padEnd(label + 1)}${fmtMs(p.ms).padStart(num)}  ${PHASE_HINT[p.name].padEnd(hint)}  ${bar}`, kind: 'meta' });
+  }
+  if (t.serverMs !== undefined) {
+    const wait = t.phases.find((p) => p.name === 'wait')?.ms;
+    lines.push({ text: '', kind: 'comment' }, { text: `// server reported ${fmtMs(t.serverMs)} (${t.serverSource})`, kind: 'comment' });
+    if (wait !== undefined) lines.push({ text: `// so about ${fmtMs(Math.max(0, wait - t.serverMs))} of the ${fmtMs(wait)} wait is network and proxies`, kind: 'comment' });
+  }
+  return lines;
+}
+
+const fmtMs = (ms: number) => `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
 
 function scriptLines(runs: ScriptRun[] = []): ResponseLine[] {
   return runs.flatMap(({ phase, outcome, mask }): ResponseLine[] => {
@@ -242,6 +287,8 @@ export function ResponsePanel({ width, height, focused, result, tab, offset, spi
         {isHttpResult(result)
           ? tabLabel('metadata', `Headers (${result.headers.length})`)
           : tabLabel('metadata', `Metadata${result ? ` (${result.headers.length + result.trailers.length})` : ''}`)}
+        <Text color={theme.muted}> │ </Text>
+        {tabLabel('timing', 'Timing')}
         <Text color={theme.muted}>{scrollInfo}</Text>
       </Box>
       <Box>{status}</Box>

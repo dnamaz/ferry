@@ -77,7 +77,7 @@ import {
 } from './components/Modals.js';
 import { HTTP_FIELDS, REQUEST_FIELDS, type RequestField, RequestPanel } from './components/RequestPanel.js';
 import { HttpRequestPanel, METHOD_COLORS, bodyText } from './components/HttpRequestPanel.js';
-import { type AnyResult, type ResponseTab, ResponsePanel, type ScriptRun, isHttpResult, responseLines } from './components/ResponsePanel.js';
+import { type AnyResult, RESPONSE_TABS, type ResponseTab, ResponsePanel, type ScriptRun, isHttpResult, responseLines } from './components/ResponsePanel.js';
 import { type SidebarTab, Sidebar, buildServiceRows, buildTree } from './components/Sidebar.js';
 import { TabBar } from './components/TabBar.js';
 import { copyToClipboard, editInExternalEditor } from './terminal.js';
@@ -196,7 +196,7 @@ REQUEST
 
 RESPONSE
   ↑↓ pgup pgdn  scroll                       g / G    top / bottom
-  m / ←→        messages ↔ metadata          y        copy to clipboard
+  m / ←→        messages → metadata → timing y        copy to clipboard
 
 VARIABLES
   {{name}} is resolved from environment > folder > collection variables.
@@ -324,7 +324,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
   const lastDiscoveryError = useRef<string | undefined>(undefined);
   const [results, setResults] = useState<Record<string, AnyResult>>({});
   const handles = useRef<Record<string, CallHandle | HttpHandle>>({});
-  // Response view (messages/metadata, scroll) is kept per tab.
+  // Response view (messages/metadata/timing, scroll) is kept per tab.
   const [views, setViews] = useState<Record<string, { tab: ResponseTab; offset: number }>>({});
   const view = (activeId && views[activeId]) || { tab: 'messages' as ResponseTab, offset: 0 };
   const responseTab = view.tab;
@@ -2288,7 +2288,8 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     if (key.end || input === 'G') return setResponseOffset(maxResponseOffset);
     if (input === 'm' || key.leftArrow || key.rightArrow) {
       setResponseOffset(0);
-      return setResponseTab((t) => (t === 'messages' ? 'metadata' : 'messages'));
+      const step = key.leftArrow ? -1 : 1;
+      return setResponseTab((t) => RESPONSE_TABS[(RESPONSE_TABS.indexOf(t) + step + RESPONSE_TABS.length) % RESPONSE_TABS.length]!);
     }
     if (input === 's' && isHttpResult(result)) return saveResponseBody();
     if (input === 'x' && result && activeId) {

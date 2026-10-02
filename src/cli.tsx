@@ -8,6 +8,7 @@ import { type Environment, type GrpcRequest, type HttpRequest, type SchemaSource
 import { normalizeMethodPath } from './core/postman-v3.js';
 import { type OAuthConfig, hostPort, resolveHttpRequest, resolveRequest } from './core/resolve.js';
 import { certificateFor, mergeTls } from './core/tls.js';
+import { type Timing, formatPhases } from './core/timing.js';
 import { effectiveHttpHeaders, jsonBody, looksBinary, sendHttp } from './http/client.js';
 import { toCurl } from './http/curl.js';
 import { cachedToken, clearTokens, describeExpiry, getToken, withToken } from './http/oauth.js';
@@ -57,6 +58,12 @@ const program = new Command()
   .description('Terminal API client for gRPC and REST — discover services, manage collections, import Postman and Bruno, export Postman.\nRun without a command to open the interactive UI.')
   .option('--home <dir>', 'data directory', defaultHome())
   .version(VERSION);
+
+function writeTiming(t: Timing | undefined): void {
+  if (!t) return;
+  process.stderr.write(`timing: ${formatPhases(t)}\n`);
+  if (t.serverMs !== undefined) process.stderr.write(`server: ${t.serverMs} ms (${t.serverSource})\n`);
+}
 
 const ws = () => new Workspace(resolve(program.opts().home as string));
 
@@ -207,6 +214,7 @@ async function runCall(opts: Parameters<typeof invoke>[0], verbose: boolean, aft
     for (const [k, v] of r.headers) process.stderr.write(`< ${k}: ${v}\n`);
     for (const [k, v] of r.trailers) process.stderr.write(`< (trailer) ${k}: ${v}\n`);
     process.stderr.write(`status: ${r.codeName ?? r.state} (${r.durationMs} ms)\n`);
+    writeTiming(r.timing);
   }
   if (r.state !== 'cancelled' && r.code !== undefined) await after?.(r);
   if (r.error) throw new Error(r.error);
@@ -424,6 +432,7 @@ async function runHttp(
     process.stderr.write(`< ${res.status} ${res.statusText}\n`);
     for (const [k, v] of res.headers) process.stderr.write(`< ${k}: ${v}\n`);
     process.stderr.write(`(${res.durationMs} ms, ${res.body.length} bytes)\n`);
+    writeTiming(res.timing);
   }
   if (o.output) {
     (await import('node:fs')).writeFileSync(o.output, res.body);

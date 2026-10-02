@@ -91,7 +91,7 @@ Three panes: the **sidebar** (Collections / Services tabs), the **request** edit
 
 **Request pane**: arrow keys pick a field and `enter` edits it. Name and URL edit inline. Method opens a fuzzy picker. Metadata opens a table editor, and Auth and Settings open forms. Message opens an inline JSON editor: `esc` to finish, `ctrl+f` to format, auto-indent. You can also press `o` to edit the message in `$VISUAL`/`$EDITOR`, `t` to generate a template from the schema, or `f` to format.
 
-**Response pane**: scroll with arrows, `pgup`/`pgdn` and `g`/`G`. `m` toggles between messages and headers/trailers, `y` copies to the clipboard, and `x` clears the response.
+**Response pane**: scroll with arrows, `pgup`/`pgdn` and `g`/`G`. `m` (or `←`/`→`) cycles between messages, headers/trailers and timing, `y` copies to the clipboard, and `x` clears the response.
 
 In modals, `esc` saves and closes; `ctrl+c` discards.
 
@@ -118,7 +118,9 @@ In modals, `esc` saves and closes; `ctrl+c` discards.
 | Body | `none`, JSON, text, XML, HTML, JavaScript, form-urlencoded, multipart (a value starting with `@` sends that file), binary file, GraphQL (query + variables). `enter` on **Content** edits text bodies; `o` opens `$EDITOR`. |
 | Settings | Follow redirects (and max), verify TLS certificates, timeout. |
 
-Responses show status, time, size and content type, a **Body** tab (JSON with selectable values, text, or a binary notice) and a **Headers** tab. Streamed bodies such as `text/event-stream` appear as they arrive. In the response pane, `s` saves the body to a file (named from `Content-Disposition` when present) and `C` in any pane shows the request as `curl`.
+Responses show status, time, size and content type, a **Body** tab (JSON with selectable values, text, or a binary notice), a **Headers** tab and a **Timing** tab. Streamed bodies such as `text/event-stream` appear as they arrive. In the response pane, `s` saves the body to a file (named from `Content-Disposition` when present) and `C` in any pane shows the request as `curl`.
+
+The **Timing** tab (gRPC and HTTP) splits the total into consecutive phases: `dns`, `connect` (TCP), `tls`, `http2` (gRPC's connection setup), `send` (request body upload), `wait` (request sent → response headers, i.e. one network round trip plus server time) and `receive`. When the response carries `x-envoy-upstream-service-time` or `Server-Timing`, the server's own time is shown too, so the network's share of `wait` is visible. Each gRPC call opens a new connection, so it always pays for dns/connect/tls/http2; HTTP requests reuse open connections and are marked as reused. `--verbose` on the CLI prints the same breakdown.
 
 ### Chaining requests (List → Get)
 

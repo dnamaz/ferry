@@ -1,10 +1,15 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import diagnostics from 'node:diagnostics_channel';
 import { openAsBlob } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, resolve } from 'node:path';
-import { Agent, FormData, fetch } from 'undici';
+import type { Socket } from 'node:net';
+import { performance } from 'node:perf_hooks';
+import { Agent, type DiagnosticsChannel, FormData, buildConnector, fetch } from 'undici';
 import type { TlsFiles } from '../core/model.js';
 import type { ResolvedHttpRequest, SourcedHeader } from '../core/resolve.js';
 import { explainTlsError, hasTls, loadTls } from '../core/tls.js';
+import { type Timing, phasesFrom, serverTime } from '../core/timing.js';
 
 export interface HttpResult {
   kind: 'http';
@@ -21,12 +26,116 @@ export interface HttpResult {
   durationMs?: number;
   /** time to response headers */
   ttfbMs?: number;
+  /** where the time went (connection phases, wait, receive), once the request has finished */
+  timing?: Timing;
   error?: string;
 }
 
 export interface HttpHandle {
   cancel(): void;
   done: Promise<HttpResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Timing. fetch() reports none, so it is pieced together from two sources:
+// - the connector (below) times each NEW socket: 'lookup' (DNS), 'connect' (TCP), 'secureConnect' (TLS);
+// - undici's diagnostics channels say when OUR request was created, went out on which socket, finished
+//   uploading, and got headers. Requests are told apart by an AsyncLocalStorage set around fetch().
+// A socket's handshake is credited to the first request sent on it; later ones are marked reused.
+// ---------------------------------------------------------------------------
+
+/** performance.now() values */
+interface SocketMarks {
+  start: number;
+  lookup?: number;
+  tcp?: number;
+  tls?: number;
+  /** the connector called back: set when the events above were not seen */
+  end?: number;
+  claimed?: boolean;
+}
+
+interface RequestMarks {
+  /** requests created so far: more than one means redirects were followed */
+  requests: number;
+  created?: number;
+  sent?: number;
+  bodySent?: number;
+  headers?: number;
+  socket?: SocketMarks;
+  reused?: boolean;
+}
+
+const sockets = new WeakMap<Socket, SocketMarks>();
+const requests = new WeakMap<object, RequestMarks>();
+const current = new AsyncLocalStorage<RequestMarks>();
+
+diagnostics.subscribe('undici:request:create', (msg) => {
+  const m = current.getStore();
+  if (!m) return;
+  const { request } = msg as DiagnosticsChannel.RequestCreateMessage;
+  requests.set(request, m);
+  // A redirect starts over: only the last request's phases are kept.
+  Object.assign(m, { requests: m.requests + 1, created: performance.now(), sent: undefined, bodySent: undefined, headers: undefined, socket: undefined, reused: undefined });
+});
+diagnostics.subscribe('undici:client:sendHeaders', (msg) => {
+  const { request, socket } = msg as DiagnosticsChannel.ClientSendHeadersMessage;
+  const m = requests.get(request);
+  if (!m) return;
+  m.sent = performance.now();
+  const s = sockets.get(socket);
+  if (!s) return;
+  m.reused = !!s.claimed;
+  if (!s.claimed) {
+    s.claimed = true;
+    m.socket = s;
+  }
+});
+diagnostics.subscribe('undici:request:bodySent', (msg) => {
+  const m = requests.get((msg as DiagnosticsChannel.RequestBodySentMessage).request);
+  if (m) m.bodySent = performance.now();
+});
+diagnostics.subscribe('undici:request:headers', (msg) => {
+  const m = requests.get((msg as DiagnosticsChannel.RequestHeadersMessage).request);
+  if (m) m.headers ??= performance.now();
+});
+
+/** Wraps a connector so every socket it opens records its DNS/TCP/TLS milestones. */
+function timedConnector(base: buildConnector.connector): buildConnector.connector {
+  return (options, callback) => {
+    const marks: SocketMarks = { start: performance.now() };
+    const socket = (base as (...a: Parameters<buildConnector.connector>) => unknown)(options, (err, s) => {
+      if (s && !sockets.has(s)) sockets.set(s, { ...marks, end: performance.now() });
+      callback(...([err, s] as Parameters<buildConnector.Callback>));
+    }) as Socket | undefined;
+    // undici's connector returns the socket it is opening; listen before any of these can fire.
+    if (socket && typeof socket.once === 'function') {
+      sockets.set(socket, marks);
+      socket.once('lookup', () => (marks.lookup = performance.now()));
+      socket.once('connect', () => (marks.tcp = performance.now()));
+      socket.once('secureConnect', () => (marks.tls = performance.now()));
+    }
+  };
+}
+
+/** Phases of the final request; `t0` and `end` are performance.now() values. */
+function requestTiming(m: RequestMarks, t0: number, end: number, hasBody: boolean, headers: Array<[string, string]>): Timing {
+  const at = (v?: number) => (v === undefined ? undefined : v - t0);
+  const s = m.socket;
+  return {
+    phases: phasesFrom([
+      [m.requests > 1 ? 'redirect' : 'prepare', at(s ? s.start : m.sent)],
+      ['dns', at(s?.lookup)],
+      // Without the socket's own events, the connector's callback covers dns + tcp + tls.
+      ['connect', at(s?.tcp ?? s?.end)],
+      ['tls', at(s?.tls)],
+      ['send', hasBody ? at(m.bodySent) : undefined],
+      ['wait', at(m.headers ?? end)],
+      ['receive', m.headers === undefined ? undefined : at(end)],
+    ]),
+    reused: m.reused,
+    ...serverTime(headers),
+  };
 }
 
 const agents = new Map<string, Agent>();
@@ -36,7 +145,7 @@ function agentFor(strict: boolean, tls: TlsFiles, baseDir?: string): Agent {
   let a = agents.get(key);
   if (!a) {
     const m = hasTls(tls) ? loadTls(tls, baseDir) : {};
-    a = new Agent({ connect: { rejectUnauthorized: strict, ...m } });
+    a = new Agent({ connect: timedConnector(buildConnector({ rejectUnauthorized: strict, ...m })) });
     agents.set(key, a);
   }
   return a;
@@ -143,6 +252,9 @@ async function buildBody(r: ResolvedHttpRequest): Promise<{ body?: string | Buff
 
 export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) => void, opts: { oauthToken?: string } = {}): HttpHandle {
   const result: HttpResult = { kind: 'http', state: 'running', headers: [], body: Buffer.alloc(0), startedAt: Date.now() };
+  const t0 = performance.now();
+  const marks: RequestMarks = { requests: 0 };
+  let hasBody = false;
   const controller = new AbortController();
   let cancelled = false;
   let lastUpdate = 0;
@@ -164,6 +276,7 @@ export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) =>
     }
     if (r.oauth && opts.oauthToken === undefined) throw new Error('OAuth2 token was not fetched before sending');
     const { body } = await buildBody(r);
+    hasBody = body !== undefined;
     // multipart/form-data gets its boundary from fetch, so don't set that one ourselves.
     const headers: Array<[string, string]> = effectiveHttpHeaders(r, opts.oauthToken)
       .filter((h) => !(h.source === 'default' && h.value.includes('<generated>')))
@@ -172,14 +285,16 @@ export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) =>
     const s = r.settings;
     const timeout = s.timeout && s.timeout > 0 ? setTimeout(() => controller.abort(new Error(`Timed out after ${s.timeout} ms`)), s.timeout) : undefined;
     try {
-      const res = await fetch(parsed, {
-        method: r.method,
-        headers,
-        body: ['GET', 'HEAD'].includes(r.method) && !body ? undefined : (body as never),
-        redirect: s.followRedirects === false ? 'manual' : 'follow',
-        signal: controller.signal,
-        dispatcher: agentFor(s.strictSSL !== false, r.tls ?? {}, r.baseDir),
-      });
+      const res = await current.run(marks, () =>
+        fetch(parsed, {
+          method: r.method,
+          headers,
+          body: ['GET', 'HEAD'].includes(r.method) && !body ? undefined : (body as never),
+          redirect: s.followRedirects === false ? 'manual' : 'follow',
+          signal: controller.signal,
+          dispatcher: agentFor(s.strictSSL !== false, r.tls ?? {}, r.baseDir),
+        }),
+      );
       result.ttfbMs = Date.now() - result.startedAt;
       result.status = res.status;
       result.statusText = res.statusText;
@@ -216,6 +331,8 @@ export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) =>
     })
     .then(() => {
       result.durationMs = Date.now() - result.startedAt;
+      // No timing for a request that never went out (bad URL, connection refused): there is nothing to split.
+      if (marks.sent !== undefined) result.timing = requestTiming(marks, t0, performance.now(), hasBody, result.headers);
       update(true);
       return { ...result };
     });
