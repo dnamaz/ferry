@@ -4,7 +4,7 @@ import type { CallResult } from '../../grpc/invoke.js';
 import { type HttpResult, jsonBody, looksBinary } from '../../http/client.js';
 import type { ScriptOutcome, ScriptPhase } from '../../core/scripts.js';
 import { theme } from '../theme.js';
-import { formatBytes, formatDuration, truncate } from '../util.js';
+import { formatBytes, formatDuration, truncate, wrapText } from '../util.js';
 
 export interface ScriptRun {
   phase: ScriptPhase;
@@ -39,11 +39,14 @@ export interface ResponseLine {
   value?: unknown;
 }
 
-/** Lines shown in the response body for the given tab. */
-export function responseLines(result: AnyResult | undefined, tab: ResponseTab): ResponseLine[] {
+/** Lines shown in the response body for the given tab; error lines wrap to `width` so long messages stay readable. */
+export function responseLines(result: AnyResult | undefined, tab: ResponseTab, width?: number): ResponseLine[] {
   if (!result) return [];
   const lines = tab === 'metadata' ? [...bodyLines(result, tab), ...scriptLines(result.scripts)] : [...scriptErrors(result.scripts), ...bodyLines(result, tab)];
-  return lines;
+  if (!width) return lines;
+  return lines.flatMap((l) =>
+    l.kind === 'error' ? wrapText(l.text, width, l.text.startsWith('// ') ? '//   ' : '  ').map((text) => ({ ...l, text })) : [l],
+  );
 }
 
 /** Script errors and failed tests, shown above the response body. */
@@ -140,7 +143,7 @@ function statusColor(status?: number): string {
 export function ResponsePanel({ width, height, focused, result, tab, offset, spinner, cursor }: Props) {
   const inner = width - 4;
   const bodyHeight = Math.max(1, height - 4);
-  const lines = useMemo(() => responseLines(result, tab), [result, tab]);
+  const lines = useMemo(() => responseLines(result, tab, inner), [result, tab, inner]);
 
   let status: React.ReactNode = <Text color={theme.muted}>ctrl+r to send</Text>;
   if (isHttpResult(result)) {

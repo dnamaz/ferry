@@ -91,7 +91,7 @@ Three panes: the **sidebar** (Collections / Services tabs), the **request** edit
 
 **Request pane**: arrow keys pick a field and `enter` edits it. Name and URL edit inline. Method opens a fuzzy picker. Metadata opens a table editor, and Auth and Settings open forms. Message opens an inline JSON editor: `esc` to finish, `ctrl+f` to format, auto-indent. You can also press `o` to edit the message in `$VISUAL`/`$EDITOR`, `t` to generate a template from the schema, or `f` to format.
 
-**Response pane**: scroll with arrows, `pgup`/`pgdn` and `g`/`G`. `m` toggles between messages and headers/trailers, and `y` copies to the clipboard.
+**Response pane**: scroll with arrows, `pgup`/`pgdn` and `g`/`G`. `m` toggles between messages and headers/trailers, `y` copies to the clipboard, and `x` clears the response.
 
 In modals, `esc` saves and closes; `ctrl+c` discards.
 

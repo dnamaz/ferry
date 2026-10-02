@@ -4,6 +4,7 @@ import type { GrpcSettings, TlsFiles } from '../core/model.js';
 import { createClient, deadlineFrom, metadataToPairs, statusName, toMetadata } from './connection.js';
 import { type MethodInfo, type Schema, isClientStreaming } from './schema.js';
 import { explainTlsError } from '../core/tls.js';
+import { normalizeJson } from './normalize.js';
 
 export interface InvokeOptions {
   url: string;
@@ -58,7 +59,7 @@ export function encodeMessages(schema: Schema, method: MethodInfo, text: string)
 
   return values.map((value, i) => {
     try {
-      return toBinary(input, fromJson(input, value as JsonValue, { registry: schema.registry }));
+      return toBinary(input, fromJson(input, normalizeJson(input, value) as JsonValue, { registry: schema.registry }));
     } catch (err) {
       const where = values.length > 1 ? ` (message #${i + 1})` : '';
       throw new Error(`Invalid ${input.typeName}${where}: ${(err as Error).message}`);

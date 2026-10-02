@@ -1,5 +1,7 @@
 import type { ResolvedRequest } from '../core/resolve.js';
 import { parseTarget } from './connection.js';
+import type { DescMessage } from '@bufbuild/protobuf';
+import { normalizeJson } from './normalize.js';
 import { normalizeMethodPath } from './schema.js';
 
 /** POSIX single-quote escaping. */
@@ -11,9 +13,10 @@ export function shellQuote(s: string): string {
 /**
  * Builds an equivalent grpcurl command for a resolved request.
  * grpcurl reads client-stream input as a sequence of JSON objects rather than
- * an array, so arrays on streaming methods are unrolled.
+ * an array, so arrays on streaming methods are unrolled. With the method's `input` type,
+ * the body is rewritten to canonical proto3 JSON (see normalizeJson), which is all grpcurl accepts.
  */
-export function toGrpcurl(r: ResolvedRequest, opts: { clientStreaming?: boolean; oauthToken?: string } = {}): string {
+export function toGrpcurl(r: ResolvedRequest, opts: { clientStreaming?: boolean; oauthToken?: string; input?: DescMessage } = {}): string {
   const s = r.settings;
   const flags: string[][] = [];
   const flag = (...parts: string[]) => flags.push(parts);
@@ -57,7 +60,7 @@ export function toGrpcurl(r: ResolvedRequest, opts: { clientStreaming?: boolean;
     else flag('-H', shellQuote(`${h.key}: ${value}`));
   }
 
-  const body = grpcurlBody(r.message, opts.clientStreaming ?? true);
+  const body = grpcurlBody(r.message, opts.clientStreaming ?? true, opts.input);
   if (body !== undefined) flag('-d', shellQuote(body));
 
   const method = normalizeMethodPath(r.methodPath).replace(/^\//, '');
@@ -67,11 +70,13 @@ export function toGrpcurl(r: ResolvedRequest, opts: { clientStreaming?: boolean;
   return [...notes, lines.join(' \\\n')].join('\n');
 }
 
-function grpcurlBody(message: string, clientStreaming: boolean): string | undefined {
+function grpcurlBody(message: string, clientStreaming: boolean, input?: DescMessage): string | undefined {
   const text = message.trim();
   if (!text || text === '{}') return undefined;
   try {
-    const json = JSON.parse(text);
+    const parsed = JSON.parse(text);
+    const canonical = (m: unknown) => (input ? normalizeJson(input, m) : m);
+    const json = Array.isArray(parsed) ? parsed.map(canonical) : canonical(parsed);
     if (clientStreaming && Array.isArray(json)) return json.map((m) => JSON.stringify(m, null, 2)).join('\n');
     return JSON.stringify(json, null, 2);
   } catch {

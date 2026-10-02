@@ -6,6 +6,22 @@ export function truncate(s: string, width: number): string {
   return width <= 1 ? s.slice(0, width) : `${s.slice(0, width - 1)}…`;
 }
 
+/** Splits `s` into rows of at most `width` chars, breaking at spaces where possible; later rows start with `indent`. */
+export function wrapText(s: string, width: number, indent = ''): string[] {
+  if (width <= indent.length + 1 || s.length <= width) return [s];
+  const rows: string[] = [];
+  let rest = s;
+  while (rest.length > width - (rows.length ? indent.length : 0)) {
+    const room = width - (rows.length ? indent.length : 0);
+    const space = rest.lastIndexOf(' ', room);
+    const cut = space > room / 2 ? space : room;
+    rows.push((rows.length ? indent : '') + rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) rows.push((rows.length ? indent : '') + rest);
+  return rows;
+}
+
 export function padEnd(s: string, width: number): string {
   const t = truncate(s, width);
   return t + ' '.repeat(Math.max(0, width - t.length));

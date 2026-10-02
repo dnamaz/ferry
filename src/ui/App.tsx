@@ -146,6 +146,7 @@ CHAINING (response pane: enter to select a value)
   ↑↓            move between values          enter    actions for the value
   u             use in another open request (pick the field; best match preselected)
   v             save as {{variable}}         y        copy value
+  x             clear the response (when no value is selected)
   Captures (request field) re-save values after every successful call.
   Scripts (request field) run JS/TS before the request / after the response:
     bru.setEnvVar('accessToken', res.getBody().access_token)
@@ -2107,7 +2108,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
   };
 
   const result = activeId ? results[activeId] : undefined;
-  const respLines = useMemo(() => responseLines(result, responseTab), [result, responseTab]);
+  const respLines = useMemo(() => responseLines(result, responseTab, responseWidth - 4), [result, responseTab, responseWidth]);
   const maxResponseOffset = Math.max(0, respLines.length - responseBody);
 
   const valueLines = useMemo(() => respLines.flatMap((l, i) => (l.path ? [i] : [])), [respLines]);
@@ -2161,13 +2162,21 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       return setResponseTab((t) => (t === 'messages' ? 'metadata' : 'messages'));
     }
     if (input === 's' && isHttpResult(result)) return saveResponseBody();
+    if (input === 'x' && result && activeId) {
+      if (result.state === 'running') return setToast('Call still running · ctrl+c to cancel it first', theme.warn);
+      setResults(({ [activeId]: _, ...rest }) => rest);
+      setResponseOffset(0);
+      return setToast('Response cleared', theme.muted);
+    }
     if (input === 'y') {
       if (!respLines.length) return;
       const text =
         responseTab === 'messages' && result
           ? isHttpResult(result)
             ? result.body.toString('utf8')
-            : result.messages.map((m) => JSON.stringify(m, null, 2)).join('\n')
+            : result.messages.length
+              ? result.messages.map((m) => JSON.stringify(m, null, 2)).join('\n')
+              : [result.error, result.state === 'error' && result.details ? `${result.codeName}: ${result.details}` : undefined].filter(Boolean).join('\n')
           : respLines.map((l) => l.text).join('\n');
       setToast(copyToClipboard(text) ? 'Copied to clipboard' : 'No clipboard tool found (pbcopy, wl-copy, xclip, xsel)', theme.ok);
     }
@@ -2240,6 +2249,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         if (!request || !resolved) return setToast('Open a request first', theme.warn);
         const cmd = toGrpcurl(resolved, {
           clientStreaming: method ? isClientStreaming(method.kind) : undefined,
+          input: method?.desc.input,
           oauthToken: resolved.oauth ? cachedToken(resolved.oauth, ws.home)?.accessToken : undefined,
         });
         const notes = [
@@ -2353,8 +2363,8 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     if (focus === 'request' && httpReq) return 'enter: edit · p: preview · o: $EDITOR · f: format · C: curl · P: certs · ctrl+r: send · ctrl+s: save';
     if (focus === 'request') return 'enter: edit · p: preview · t: template · o: $EDITOR · d: describe · C: grpcurl · ctrl+r: send · ctrl+s: save';
     if (selecting) return '↑↓: move between values · enter: use value… · y: copy · v: save as {{var}} · u: use in another tab · esc: done';
-    if (isHttpResult(result)) return '↑↓: scroll · enter: select a value · m: body/headers · y: copy · s: save body to file';
-    return '↑↓: scroll · enter: select a value · m: messages/metadata · y: copy all';
+    if (isHttpResult(result)) return '↑↓: scroll · enter: select a value · m: body/headers · y: copy · s: save body to file · x: clear';
+    return '↑↓: scroll · enter: select a value · m: messages/metadata · y: copy all · x: clear';
   })();
 
   const top = modals.at(-1);
