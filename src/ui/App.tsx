@@ -39,7 +39,7 @@ import {
   summarizeOutcome,
   withLocals,
 } from '../core/scripts.js';
-import { type Segment, formatPath, leaves, normalizeKey, setInJsonText, suggestVariableName, valueToString } from '../core/jsonpath.js';
+import { type Segment, formatPath, isPlaceholder, leaves, matchFields, normalizeKey, setInJsonText, suggestVariableName, valueToString } from '../core/jsonpath.js';
 import { type OAuthConfig, buildScopes, effectiveAuth, oauthFields, resolveHttpRequest, resolveRequest } from '../core/resolve.js';
 import { cachedToken, describeExpiry, getToken, withToken } from '../http/oauth.js';
 import { previewGrpc, previewHttp } from '../core/preview.js';
@@ -57,6 +57,8 @@ import { EnvManager } from './components/EnvManager.js';
 import { CertManager } from './components/CertManager.js';
 import { JsonLine } from './components/JsonLine.js';
 import {
+  type ChecklistItem,
+  ChecklistModal,
   ConfirmModal,
   type FormField,
   FormModal,
@@ -84,6 +86,7 @@ type Modal =
   | { type: 'prompt'; title: string; initial?: string; hint?: string; placeholder?: string; onSubmit: (v: string) => void }
   | { type: 'confirm'; title: string; message: string; onConfirm: () => void }
   | { type: 'picker'; title: string; items: PickerItem<unknown>[]; onSelect: (v: unknown) => void; emptyText?: string; initialIndex?: number; footer?: string }
+  | { type: 'checklist'; title: string; note?: string; items: ChecklistItem[]; onSubmit: (checked: number[]) => void }
   | { type: 'text'; title: string; text: string; json?: boolean; copy?: string; wrap?: boolean; note?: string; altText?: string; altLabel?: string }
   | { type: 'form'; title: string; fields: (v: FormValues) => FormField[]; initial: FormValues; onSave: (v: FormValues) => void }
   | { type: 'kv'; title: string; rows: KVRow[]; allowSecret?: boolean; hint?: string; keyLabel?: string; valueLabel?: string; onSave: (rows: KVRow[]) => void }
@@ -144,7 +147,8 @@ const HELP = `GLOBAL
 
 CHAINING (response pane: enter to select a value)
   ↑↓            move between values          enter    actions for the value
-  u             use in another open request (pick the field; best match preselected)
+  u             use in another open request (pick the field; best match preselected),
+                then tick other fields the same response can fill
   v             save as {{variable}}         y        copy value
   x             clear the response (when no value is selected)
   Captures (request field) re-save values after every successful call.
@@ -168,7 +172,7 @@ COLLECTIONS (sidebar)
   y             duplicate                    K / J    move up / down
   v             variables (collection/folder)
   a / H         auth / headers (collection/folder; inherited by requests)
-  s             collection settings (schema source, TLS files)
+  s             collection settings (schema source, field names, TLS files)
   x             export collection as Postman v3 YAML
 
 SERVICES (sidebar)
@@ -409,6 +413,17 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [collection, env, version, activeId],
   );
+  /** What a `{{var}}` in the message will send, for the grey `→ value` hints: nested vars resolved, secrets masked, `$dynamic` ones skipped (they change per send). */
+  const varValues = useMemo(() => {
+    const resolver = createResolver(buildScopes(collection, ancestors, env));
+    const mask = secretMask(env);
+    return (name: string) => {
+      if (name.startsWith('$')) return undefined;
+      const value = resolver.lookup(name);
+      return value === undefined || value === '' ? undefined : mask(name, resolver.resolve(value));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collection, env, version, activeId]);
 
   /** Sets a `{{var}}` from the message editor where it's already defined, else the environment (else the collection). */
   const setMessageVar = (name: string, value: string) => {
@@ -880,6 +895,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       method: m,
       message: resolved.message,
       metadata,
+      protoFieldNames: resolved.protoFieldNames,
       onUpdate: (r) => setResults((p) => ({ ...p, [id]: r })),
     });
     handles.current[id] = handle;
@@ -932,12 +948,15 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     return true;
   };
 
+  /** templates follow the collection's field-name setting */
+  const templateFor = (m: MethodInfo, c: Collection | undefined = collection) => methodTemplate(m, { protoNames: c?.fieldNames === 'proto' });
+
   const applyTemplate = (m: MethodInfo | undefined = method, force = false) => {
     const request = grpcReq;
     if (!request || !activeId) return;
     if (!m) return setToast('Method not found in schema — discover services first (R)', theme.warn);
     const trivial = ['', '{}', '[]', '[{}]'].includes(request.message.replace(/\s/g, ''));
-    const doIt = () => updateRequest(activeId, (r) => ({ ...r, message: methodTemplate(m) }));
+    const doIt = () => updateRequest(activeId, (r) => ({ ...r, message: templateFor(m) }));
     if (trivial || force) return doIt();
     push({ type: 'confirm', title: 'Replace message?', message: `Replace the current message with a ${m.desc.input.typeName} template?`, onConfirm: () => (pop(), doIt()) });
   };
@@ -958,7 +977,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         const m = v as MethodInfo;
         updateRequest(activeId, (r) => ({ ...r, methodPath: m.path }));
         const trivial = ['', '{}', '[]'].includes(request.message.replace(/\s/g, ''));
-        if (trivial) updateRequest(activeId, (r) => ({ ...r, message: methodTemplate(m) }));
+        if (trivial) updateRequest(activeId, (r) => ({ ...r, message: templateFor(m) }));
         setField('message');
       },
     });
@@ -1028,6 +1047,8 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     label: string;
     /** name used to find the best match (address_id ~ addressId) */
     key: string;
+    /** where it sits, for matching against response fields (JSON path, or [name] for params/headers) */
+    path?: Segment[];
     current: string;
     focus: RequestField;
     apply: (r: SendableRequest, value: unknown) => SendableRequest;
@@ -1046,6 +1067,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       return leaves(doc).map((f) => ({
         label: `${prefix}${formatPath(f.path)}`,
         key: lastKey(f.path),
+        path: f.path,
         current: JSON.stringify(f.value),
         focus,
         apply: (r, value) => set(r, setInJsonText(r.type === 'grpc' ? r.message : (r.body.content ?? ''), f.path, value)),
@@ -1063,6 +1085,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       out.push({
         label: `path :${name}`,
         key: name,
+        path: [name],
         current: JSON.stringify(target.pathVariables.find((p) => p.key === name)?.value ?? ''),
         focus: 'pathvars',
         apply: (r, value) => {
@@ -1076,6 +1099,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       out.push({
         label: `query ${q.key}`,
         key: q.key,
+        path: [q.key],
         current: JSON.stringify(q.value),
         focus: 'params',
         apply: (r, value) => (r.type === 'http' ? { ...r, queryParams: r.queryParams.map((p) => (p === q || p.key === q.key ? { ...p, value: str(value), disabled: false } : p)) } : r),
@@ -1089,6 +1113,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       out.push({
         label: `form ${f.key}`,
         key: f.key,
+        path: [f.key],
         current: JSON.stringify(f.value),
         focus: 'body',
         apply: (r, value) => (r.type === 'http' ? { ...r, body: { ...r.body, fields: (r.body.fields ?? []).map((x) => (x.key === f.key ? { ...x, value: str(value) } : x)) } } : r),
@@ -1098,6 +1123,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       out.push({
         label: `header ${h.key}`,
         key: h.key,
+        path: [h.key],
         current: JSON.stringify(h.value),
         focus: 'headers',
         apply: (r, value) => (r.type === 'http' ? { ...r, headers: r.headers.map((x) => (x.key === h.key ? { ...x, value: str(value) } : x)) } : r),
@@ -1113,7 +1139,43 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     return out;
   };
 
-  /** Writes `value` into a field of another open request. */
+  /** Scalar values of the response message `picked` sits in (the whole body for HTTP), with full paths. */
+  const responseLeaves = (picked: Segment[]) => {
+    if (!result) return [];
+    if (isHttpResult(result)) {
+      const body = jsonBody(result);
+      return body === undefined ? [] : leaves(body);
+    }
+    const i = typeof picked[0] === 'number' ? picked[0] : 0;
+    const message = result.messages[i];
+    return message === undefined ? [] : leaves(message).map((l) => ({ path: [i, ...l.path], value: l.value }));
+  };
+
+  /** Other fields of the target that a value in the same response matches by name, skipping ones that already hold it. */
+  const otherMatches = (fields: TargetField[], chosen: TargetField, picked: Segment[]) => {
+    const candidates = fields.filter((f) => f !== chosen && f.path);
+    const matches = matchFields(responseLeaves(picked), candidates.map((f) => f.path!), picked);
+    return candidates.flatMap((field, i) => {
+      const match = matches[i];
+      return match && JSON.stringify(match.value) !== field.current ? [{ field, match }] : [];
+    });
+  };
+
+  const apply = (targetId: string, targetName: string, writes: Array<{ field: TargetField; value: unknown }>) => {
+    if (!writes.length) return setToast('Nothing copied', theme.muted);
+    try {
+      updateAny(targetId, (r) => writes.reduce((acc, w) => w.field.apply(acc, w.value), r));
+    } catch (err) {
+      return setToast(`Could not set ${writes[0]!.field.label}: ${(err as Error).message}`, theme.error);
+    }
+    openRequest(targetId);
+    setFocus('request');
+    setField(writes[0]!.field.focus);
+    const what = writes.length === 1 ? writes[0]!.field.label : `${writes.length} fields`;
+    setToast(`Set ${what} in "${targetName}" · ctrl+r to send`, theme.ok);
+  };
+
+  /** Writes `value` into a field of another open request, then offers other fields the same response can fill. */
   const useInTab = (path: Segment[], value: unknown, fromMenu = true) => {
     const others = tabs.filter((t) => t !== activeId);
     const dismiss = () => fromMenu && pop();
@@ -1136,17 +1198,28 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         initialIndex: Math.max(0, best),
         items: fields.map((f, i) => ({ label: f.label, value: i, hint: f.current ? `now ${truncate(f.current, 30)}` : undefined })) as PickerItem<unknown>[],
         onSelect: (i) => {
-          pop();
-          const f = fields[i as number]!;
-          try {
-            updateAny(targetId, (r) => f.apply(r, value));
-          } catch (err) {
-            return setToast(`Could not set ${f.label}: ${(err as Error).message}`, theme.error);
-          }
-          openRequest(targetId);
-          setFocus('request');
-          setField(f.focus);
-          setToast(`Set ${f.label} in "${target.name}" · ctrl+r to send`, theme.ok);
+          const chosen = fields[i as number]!;
+          const extras = otherMatches(fields, chosen, path);
+          if (!extras.length) return (pop(), apply(targetId, target.name, [{ field: chosen, value }]));
+          const shown = (v: unknown, n: number) => truncate(valueToString(v), n);
+          replace({
+            type: 'checklist',
+            title: `Fill "${target.name}" from this response`,
+            note: `${extras.length === 1 ? '1 more field matches' : `${extras.length} more fields match`} by name · empty ones are pre-ticked`,
+            items: [
+              { label: `${chosen.label} ← ${formatPath(path)}`, hint: `= ${shown(value, 30)}`, checked: true },
+              ...extras.map(({ field, match }) => ({
+                label: `${field.label} ← ${formatPath(match.from)}`,
+                hint: `= ${shown(match.value, 24)}${field.current && !isPlaceholder(JSON.parse(field.current)) ? `  (now ${truncate(field.current, 16)})` : ''}`,
+                checked: match.strong && isPlaceholder(JSON.parse(field.current || '""')),
+              })),
+            ],
+            onSubmit: (ticked) => {
+              pop();
+              const all = [{ field: chosen, value: value as unknown }, ...extras.map((e) => ({ field: e.field, value: e.match.value as unknown }))];
+              apply(targetId, target.name, ticked.map((t) => all[t]!));
+            },
+          });
         },
       });
     };
@@ -1652,13 +1725,29 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         importPaths: src?.type === 'proto' ? src.importPaths.join(', ') : '',
         protosets: src?.type === 'protoset' ? src.files.join(', ') : '',
         ...tlsInitial(c.tls),
+        fieldNames: c.fieldNames ?? 'json',
       },
-      fields: (v) => [...schemaFormFields(v), ...tlsFileFields(v)],
+      fields: (v) => [
+        ...schemaFormFields(v),
+        {
+          id: 'fieldNames',
+          label: 'Field names',
+          kind: 'select',
+          value: String(v.fieldNames),
+          options: [
+            { value: 'json', label: 'JSON names (tenantId)' },
+            { value: 'proto', label: 'proto names (tenant_id)' },
+          ],
+          hint: 'gRPC responses and templates. Requests accept either.',
+        },
+        ...tlsFileFields(v),
+      ],
       // (TLS files here apply to both the gRPC and HTTP requests in the collection.)
       onSave: (v) => {
         pop();
         c.schema = schemaFromForm(v);
         c.tls = tlsFromForm(v);
+        c.fieldNames = v.fieldNames === 'proto' ? 'proto' : undefined;
         ws.saveCollection(c);
         setToast('Collection settings saved', theme.ok);
       },
@@ -1958,7 +2047,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     }
     const m = row.method!;
     if (key.return) {
-      if (!request) return newScratch({ methodPath: m.path, message: methodTemplate(m), name: m.name });
+      if (!request) return newScratch({ methodPath: m.path, message: templateFor(m), name: m.name });
       updateRequest(activeId, (r) => ({ ...r, methodPath: m.path }));
       applyTemplate(m);
       setFocus('request');
@@ -1969,7 +2058,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
     if (input === 'a') {
       const url = request?.url ?? '';
       return chooseCollection(`Add ${m.name} to…`, (collectionId, parentId) => {
-        createRequestIn(collectionId, parentId, { name: m.name, url, methodPath: m.path, message: methodTemplate(m), settings: { ...(request?.settings ?? {}) } });
+        createRequestIn(collectionId, parentId, { name: m.name, url, methodPath: m.path, message: templateFor(m, ws.collection(collectionId)), settings: { ...(request?.settings ?? {}) } });
         setSidebarTab('collections');
         setToast(`Added ${m.name}`, theme.ok);
       });
@@ -2396,6 +2485,8 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         return <PromptModal title={top.title} initial={top.initial} hint={top.hint} placeholder={top.placeholder} width={Math.min(modalWidth, 80)} onSubmit={top.onSubmit} onCancel={pop} />;
       case 'confirm':
         return <ConfirmModal title={top.title} message={top.message} width={Math.min(modalWidth, 70)} onConfirm={top.onConfirm} onCancel={pop} />;
+      case 'checklist':
+        return <ChecklistModal title={top.title} note={top.note} items={top.items} width={modalWidth} height={modalHeight} onSubmit={top.onSubmit} onCancel={pop} />;
       case 'picker':
         return (
           <PickerModal
@@ -2589,6 +2680,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
                 onMessageChange={(v) => updateHttp(activeId, (r) => ({ ...r, body: { ...r.body, content: v } }))}
                 onMessageExit={() => setMessageEditing(false)}
                 vars={varLookup}
+                varValues={varValues}
                 onSetVar={setMessageVar}
                 resolvedUrl={httpResolved?.url}
                 authSummary={authSummary}
@@ -2613,6 +2705,7 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
                 onMessageChange={(v) => updateRequest(activeId, (r) => ({ ...r, message: v }))}
                 onMessageExit={() => setMessageEditing(false)}
                 vars={varLookup}
+                varValues={varValues}
                 onSetVar={setMessageVar}
                 method={method}
                 resolvedUrl={resolved?.url}

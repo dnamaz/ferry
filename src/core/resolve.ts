@@ -64,6 +64,8 @@ export interface ResolvedRequest {
   warnings: string[];
   /** directory relative proto/TLS paths are resolved against */
   baseDir?: string;
+  /** print responses with proto field names (collection setting) */
+  protoFieldNames?: boolean;
 }
 
 export function buildScopes(collection: Collection | undefined, ancestors: Folder[], env: Environment | undefined): VarScope[] {
@@ -233,6 +235,7 @@ export function resolveRequest(request: GrpcRequest, ctx: ResolveContext): Resol
     metadata: sources.filter((s) => !s.value.endsWith('<fetched at send time>')).map(({ key, value }) => ({ key, value })),
     metadataSources: sources,
     settings,
+    protoFieldNames: ctx.collection?.fieldNames === 'proto' || undefined,
     schema: resolveSchema(request.schema ?? ctx.collection?.schema ?? { type: 'reflection' }, resolver),
     tls: tlsFor(url, ctx, request.tls, resolver),
     auth,

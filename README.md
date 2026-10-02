@@ -85,7 +85,7 @@ Three panes: the **sidebar** (Collections / Services tabs), the **request** edit
 | `alt+1`…`alt+9` | jump to tab N (terminals that send Alt as Meta) |
 | `w` / `W` | close the tab / close all other tabs (asks if there are unsaved changes) |
 
-**Collections tab**: `n` new request · `f` folder · `c` collection · `r` rename · `d` delete · `y` duplicate · `K`/`J` reorder · `v` variables · `s` collection settings (schema source, TLS files) · `a` collection auth · `x` export.
+**Collections tab**: `n` new request · `f` folder · `c` collection · `r` rename · `d` delete · `y` duplicate · `K`/`J` reorder · `v` variables · `s` collection settings (schema source, field names, TLS files) · `a` collection auth · `x` export.
 
 **Services tab** lists what the current request's target exposes. `enter` puts the method on the current request and fills in an example message. `d` shows the proto definition, and `a` adds the method to a collection as a new request.
 
@@ -101,7 +101,7 @@ In modals, `esc` saves and closes; `ctrl+c` discards.
 | --- | --- |
 | URL | `host:port`, `grpc://host:port`, or `grpcs://host` (TLS, port 443 by default). Supports `{{variables}}`. |
 | Method | `/pkg.Service/Method`; `pkg.Service/Method` and `pkg.Service.Method` are also accepted. |
-| Message | Proto3 canonical JSON: camelCase or original field names, enums by name or number, int64 as strings, `Timestamp`/`Duration`/`FieldMask`/wrappers/`Struct`/`Any` in their JSON forms. Unknown fields are rejected before sending. For **client and bidi streaming**, use a JSON array: each element is sent as one message, then the stream is half-closed. |
+| Message | Proto3 canonical JSON: camelCase or original field names, enums by name or number, int64 as strings, `Timestamp`/`Duration`/`FieldMask`/wrappers/`Struct`/`Any` in their JSON forms. The protobufjs object form that Bruno and `@grpc/proto-loader` use is accepted too (`{"seconds": …, "nanos": …}` timestamps, `{"value": …}` wrappers, `[{"key": …, "value": …}]` maps) and converted using the schema. Unknown fields are rejected before sending. Responses and templates use camelCase JSON names unless the collection's **Field names** setting (`s` in the sidebar) is set to proto names (`tenant_id`); `ferry call` and `ferry describe --template` take `--proto-names`. For **client and bidi streaming**, use a JSON array: each element is sent as one message, then the stream is half-closed. |
 | Metadata | Key/value pairs. Keys ending in `-bin` take base64 values. |
 | Auth | `inherit` (nearest folder/collection), `noauth`, `bearer`, `basic`, `apikey`. Converted to metadata; explicit metadata wins. |
 | Settings | TLS on/off, certificate verification, CA/client cert/key files, schema source, emit default fields, connect timeout, max response size. |
@@ -126,7 +126,7 @@ Press `enter` in the response pane to **select a value**: `↑↓` moves between
 
 | Key | Action |
 | --- | --- |
-| `u` (or `enter` → *Use in another request*) | write the value into a field of another open tab. The best-matching field is preselected (`addressId` → `address_id`), then it switches to that tab so you can `ctrl+r`. |
+| `u` (or `enter` → *Use in another request*) | write the value into a field of another open tab. The best-matching field is preselected (`addressId` → `address_id`). If other fields of that request match values in the same response by name (`tenant_id` ← `tenantId`, `address.zip_code` ← `company.address.zipCode`), a checklist offers them too: `space` ticks, `a` ticks all or none, `enter` applies. Fields that are still empty or template defaults are pre-ticked; ones that already hold a value, or only match on a generic name like `id`, are not. Then it switches to that tab so you can `ctrl+r`. |
 | `v` (or `enter` → *Save as {{var}}*) | store it as a variable in the active environment (or the collection if no environment is active), then use `"address_id": "{{addressId}}"` anywhere |
 | `enter` → *Capture* | same, and refresh it after every successful call. It's stored on the request's **Captures** field as `{{addressId}} ← [0].addressId`; edit it there. |
 | `y` | copy the value |
@@ -232,7 +232,7 @@ ferry export "My API" ./out --format postman-v2 --with-environments             
 - **Export** follows the v3 file rules: single-quoted `{{vars}}` and special characters, `|-` blocks for multi-line JSON, sanitized unique filenames, and `name:` written only when it differs from the filename.
 - **`--replace`** removes an existing export of that collection first, so deleted requests don't linger (the UI asks first).
 - **Secret environment values** (`type: secret`) are written as empty strings unless you pass `--include-secrets`, because exports usually get committed to git.
-- **Not exported:** gRPC schema source, TLS file paths and HTTP timeouts are local-only; they aren't part of the Postman format.
+- **Not exported:** gRPC schema source, field names, TLS file paths and HTTP timeouts are local-only; they aren't part of the Postman format.
 - **v2.1 export** writes HTTP requests only (v2.1 has no gRPC type; skipped requests are listed), including saved examples that came from a v2.1 import.
 
 ## Scriptable CLI

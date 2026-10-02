@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { capturesToScript, evaluateCaptures, scriptToCaptures } from '../src/core/captures.js';
-import { formatPath, jsonLines, leaves, normalizeKey, parsePath, setInJsonText, suggestVariableName } from '../src/core/jsonpath.js';
+import { formatPath, isPlaceholder, jsonLines, leaves, matchFields, normalizeKey, parsePath, setInJsonText, suggestVariableName } from '../src/core/jsonpath.js';
 import type { GrpcRequest } from '../src/core/model.js';
 import { exportCollectionV3, importV3 } from '../src/core/postman-v3.js';
 import { Workspace } from '../src/core/workspace.js';
@@ -43,6 +43,33 @@ describe('json paths', () => {
     expect(JSON.parse(setInJsonText(text, ['address_id'], 'a-1'))).toEqual({ tenant_id: '{{tenantId}}', address_id: 'a-1' });
     expect(leaves(JSON.parse(text)).map((l) => formatPath(l.path))).toEqual(['tenant_id', 'address_id']);
     expect(normalizeKey('address_id')).toBe(normalizeKey('addressId'));
+  });
+
+  it('matches other request fields to response values by name', () => {
+    const response = {
+      tenantId: 't-1',
+      company: { companyId: 'c-1', name: 'Acme', address: { id: 'a-1', zipCode: '10001' } },
+      employee: { id: 'e-1', name: 'Ada' },
+    };
+    const source = leaves(response).map((l) => ({ path: [0, ...l.path], value: l.value }));
+    const [tenant, company, zip, addressId, id, missing] = matchFields(
+      source,
+      [['tenant_id'], ['company_id'], ['address', 'zip_code'], ['address', 'id'], ['id'], ['pay_date']],
+      [0, 'employee', 'id'],
+    );
+    expect(tenant).toEqual({ from: [0, 'tenantId'], value: 't-1', strong: true });
+    expect(company?.from).toEqual([0, 'company', 'companyId']);
+    expect(zip?.value).toBe('10001');
+    // parents decide between same-named fields
+    expect(addressId).toMatchObject({ value: 'a-1', strong: true });
+    // a bare generic name takes the one nearest the picked value, but isn't ticked by default
+    expect(id).toMatchObject({ value: 'e-1', strong: false });
+    expect(missing).toBeUndefined();
+  });
+
+  it('tells template placeholders from real values', () => {
+    for (const v of ['', 0, false, null, '0', 'ADDRESS_TYPE_UNSPECIFIED']) expect(isPlaceholder(v)).toBe(true);
+    for (const v of ['x', 1, true, '{{tenantId}}']) expect(isPlaceholder(v)).toBe(false);
   });
 
   it('suggests variable names', () => {

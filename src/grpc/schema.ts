@@ -338,7 +338,12 @@ function enumTemplate(e: DescEnum): unknown {
 }
 
 /** Builds an example JSON object with every field populated (first member of each oneof). */
-export function messageTemplate(desc: DescMessage, depth = 0, seen: string[] = []): unknown {
+export interface TemplateOptions {
+  /** use proto field names (tenant_id) instead of JSON names (tenantId) */
+  protoNames?: boolean;
+}
+
+export function messageTemplate(desc: DescMessage, depth = 0, seen: string[] = [], opts: TemplateOptions = {}): unknown {
   const wkt = WKT_TEMPLATES[desc.typeName];
   if (wkt) return wkt();
   if (depth > 4 || seen.includes(desc.typeName)) return {};
@@ -353,11 +358,11 @@ export function messageTemplate(desc: DescMessage, depth = 0, seen: string[] = [
       case 'enum':
         return enumTemplate(field.enum);
       case 'message':
-        return messageTemplate(field.message, depth + 1, nextSeen);
+        return messageTemplate(field.message, depth + 1, nextSeen, opts);
       case 'list':
         if (field.listKind === 'scalar') return [scalarTemplate(field.scalar)];
         if (field.listKind === 'enum') return [enumTemplate(field.enum)];
-        return [messageTemplate(field.message, depth + 1, nextSeen)];
+        return [messageTemplate(field.message, depth + 1, nextSeen, opts)];
       case 'map': {
         const key = field.mapKey === ScalarType.STRING ? 'key' : field.mapKey === ScalarType.BOOL ? 'true' : '0';
         const value =
@@ -365,7 +370,7 @@ export function messageTemplate(desc: DescMessage, depth = 0, seen: string[] = [
             ? scalarTemplate(field.scalar)
             : field.mapKind === 'enum'
               ? enumTemplate(field.enum)
-              : messageTemplate(field.message, depth + 1, nextSeen);
+              : messageTemplate(field.message, depth + 1, nextSeen, opts);
         return { [key]: value };
       }
     }
@@ -376,13 +381,13 @@ export function messageTemplate(desc: DescMessage, depth = 0, seen: string[] = [
       if (doneOneofs.has(field.oneof.name)) continue;
       doneOneofs.add(field.oneof.name);
     }
-    out[field.jsonName] = valueFor(field);
+    out[opts.protoNames ? field.name : field.jsonName] = valueFor(field);
   }
   return out;
 }
 
-export function methodTemplate(method: MethodInfo): string {
-  const one = messageTemplate(method.desc.input);
+export function methodTemplate(method: MethodInfo, opts: TemplateOptions = {}): string {
+  const one = messageTemplate(method.desc.input, 0, [], opts);
   const value = isClientStreaming(method.kind) ? [one] : one;
   return JSON.stringify(value, null, 2);
 }

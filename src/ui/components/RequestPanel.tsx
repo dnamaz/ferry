@@ -31,6 +31,8 @@ interface Props {
   onMessageExit: () => void;
   /** values of `{{vars}}` in the active scopes, for coloring the message */
   vars?: VarLookup;
+  /** display values of `{{vars}}` (resolved, secrets masked), shown in grey after message lines */
+  varValues?: VarLookup;
   /** sets a `{{var}}` from the message editor (enter on it) */
   onSetVar?: (name: string, value: string) => void;
   method?: MethodInfo;
@@ -179,7 +181,7 @@ export function RequestPanel(props: Props) {
                 <Text color={theme.muted} dimColor>
                   {String(i + 1).padStart(3)}{' '}
                 </Text>
-                <JsonLine line={line} width={inner - 4} vars={props.vars} />
+                <JsonLine line={line} width={inner - 4} vars={props.vars} values={props.varValues} />
               </Box>
             ))}
         </Box>

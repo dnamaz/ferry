@@ -140,13 +140,14 @@ targetOptions(
     .argument('<url>')
     .argument('<method>', 'pkg.Service/Method')
     .option('--template', 'print an example request message instead')
+    .option('--proto-names', 'template uses proto field names (tenant_id) instead of JSON names (tenantId)')
     .description('Show the proto definition of a method'),
-).action((url: string, methodPath: string, o: TargetOpts & { template?: boolean }) =>
+).action((url: string, methodPath: string, o: TargetOpts & { template?: boolean; protoNames?: boolean }) =>
   withErrors(async () => {
     const schema = await discover({ source: sourceFrom(o), url, settings: settingsFrom(o), tls: tlsFrom(o, url), metadata: headersFrom(o) });
     const m = schema.findMethod(normalizeMethodPath(methodPath));
     if (!m) throw new Error(`method ${methodPath} not found`);
-    print(o.template ? methodTemplate(m) : describeMethod(m));
+    print(o.template ? methodTemplate(m, { protoNames: o.protoNames }) : describeMethod(m));
   }),
 );
 
@@ -158,14 +159,15 @@ targetOptions(
     .option('-d, --data <json>', 'request message (JSON; array for client streaming); "@file" reads a file, "-" reads stdin', '{}')
     .option('--deadline <ms>', 'call deadline in milliseconds')
     .option('-v, --verbose', 'print headers, trailers and status to stderr')
+    .option('--proto-names', 'print response fields with proto names (tenant_id) instead of JSON names (tenantId)')
     .description('Invoke a method'),
-).action((url: string, methodPath: string, o: TargetOpts & { data: string; deadline?: string; verbose?: boolean }) =>
+).action((url: string, methodPath: string, o: TargetOpts & { data: string; deadline?: string; verbose?: boolean; protoNames?: boolean }) =>
   withErrors(async () => {
     const schema = await discover({ source: sourceFrom(o), url, settings: settingsFrom(o), tls: tlsFrom(o, url), metadata: headersFrom(o) });
     const method = schema.findMethod(normalizeMethodPath(methodPath));
     if (!method) throw new Error(`method ${methodPath} not found`);
     const message = await readData(o.data);
-    await runCall({ url, settings: settingsFrom(o), tls: tlsFrom(o, url), schema, method, message, metadata: headersFrom(o), deadlineMs: o.deadline ? Number(o.deadline) : undefined }, !!o.verbose);
+    await runCall({ url, settings: settingsFrom(o), tls: tlsFrom(o, url), schema, method, message, metadata: headersFrom(o), deadlineMs: o.deadline ? Number(o.deadline) : undefined, protoFieldNames: o.protoNames }, !!o.verbose);
   }),
 );
 
@@ -541,7 +543,7 @@ program
       const method = schema.findMethod(r.methodPath);
       if (!method) throw new Error(`method ${r.methodPath} not found on ${r.url}`);
       const captures = (item.captures ?? []).filter((c) => o.scripts === false || c.source !== 'script');
-      await runCall({ url: r.url, settings: r.settings, tls: r.tls, baseDir: r.baseDir, schema, method, message: r.message, metadata }, !!o.verbose, async (res) => {
+      await runCall({ url: r.url, settings: r.settings, tls: r.tls, baseDir: r.baseDir, schema, method, message: r.message, metadata, protoFieldNames: r.protoFieldNames }, !!o.verbose, async (res) => {
         if (o.scripts !== false) {
           const response = grpcResponseInfo(res);
           reportScripts(await runPhase('after', { store: w, request: req, ...ctx, info: grpcRequestInfo(req.name, r), response }), environment);

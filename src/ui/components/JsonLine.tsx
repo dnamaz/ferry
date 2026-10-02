@@ -1,7 +1,7 @@
 import React from 'react';
 import { Text } from 'ink';
 import { theme } from '../theme.js';
-import { type Token, tokenizeJsonLine } from '../util.js';
+import { type Token, tokenizeJsonLine, truncate } from '../util.js';
 
 const COLORS: Record<Token['kind'], string | undefined> = {
   key: theme.json.key,
@@ -65,6 +65,20 @@ function clip<T extends { text: string }>(tokens: T[], offset: number, width: nu
   return out;
 }
 
+/** `  → value` for the `{{vars}}` on a line that have one (several are joined with ` · `), else ''. */
+export function varValuesSuffix(line: string, values?: VarLookup): string {
+  if (!values) return '';
+  const shown = [...line.matchAll(VAR_RE)].map((m) => values(m[1]!)).filter((v): v is string => v !== undefined);
+  return shown.length ? `  → ${shown.join(' · ')}` : '';
+}
+
+/** Appends the muted `→ value` suffix in whatever room the visible text leaves. */
+function withValues(segments: Segment[], line: string, width: number, values?: VarLookup): Segment[] {
+  const suffix = varValuesSuffix(line, values);
+  const used = segments.reduce((n, s) => n + s.text.length, 0);
+  return suffix && used < width ? [...segments, { text: truncate(suffix, width - used), color: theme.muted }] : segments;
+}
+
 function Segments({ segments, dim }: { segments: Segment[]; dim?: boolean }) {
   return (
     <Text wrap="truncate-end" dimColor={dim}>
@@ -77,14 +91,23 @@ function Segments({ segments, dim }: { segments: Segment[]; dim?: boolean }) {
   );
 }
 
-export function JsonLine({ line, width, offset = 0, dim, vars }: { line: string; width: number; offset?: number; dim?: boolean; vars?: VarLookup }) {
+interface LineProps {
+  line: string;
+  width: number;
+  offset?: number;
+  vars?: VarLookup;
+  /** display values of `{{vars}}` (resolved, secrets masked); shown after the line as `→ value` */
+  values?: VarLookup;
+}
+
+export function JsonLine({ line, width, offset = 0, dim, vars, values }: LineProps & { dim?: boolean }) {
   const segments = tokenizeJsonLine(line).map((t) => ({ text: t.text, color: t.kind === 'var' ? varColor(t.text, vars) : COLORS[t.kind], bold: t.kind === 'var', underline: t.kind === 'var' && !varSet(t.text, vars) }));
-  return <Segments segments={clip(segments, offset, width)} dim={dim} />;
+  return <Segments segments={withValues(clip(segments, offset, width), line, width, values)} dim={dim} />;
 }
 
 /** A non-JSON line with only `{{vars}}` highlighted. */
-export function PlainLine({ line, width, offset = 0, vars }: { line: string; width: number; offset?: number; vars?: VarLookup }) {
-  return <Segments segments={clip(varSegments(line, vars), offset, width)} />;
+export function PlainLine({ line, width, offset = 0, vars, values }: LineProps) {
+  return <Segments segments={withValues(clip(varSegments(line, vars), offset, width), line, width, values)} />;
 }
 
 /** The line being edited: `{{vars}}` highlighted, the cursor shown inverse. */

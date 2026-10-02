@@ -19,6 +19,8 @@ export interface InvokeOptions {
   metadata?: Array<{ key: string; value: string }>;
   /** per-call deadline in ms */
   deadlineMs?: number;
+  /** print response fields as `tenant_id` rather than `tenantId` */
+  protoFieldNames?: boolean;
   onUpdate?: (result: CallResult) => void;
 }
 
@@ -91,7 +93,7 @@ export function invoke(opts: InvokeOptions): CallHandle {
 
   const decode = (buf: Buffer): JsonValue => {
     const msg = fromBinary(method.desc.output, buf);
-    return toJson(method.desc.output, msg, { registry: schema.registry, alwaysEmitImplicit: includeDefaults });
+    return toJson(method.desc.output, msg, { registry: schema.registry, alwaysEmitImplicit: includeDefaults, useProtoFieldName: opts.protoFieldNames });
   };
   const serialize = (bytes: Uint8Array) => Buffer.from(bytes);
 

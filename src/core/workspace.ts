@@ -401,6 +401,7 @@ export class Workspace {
         c.id = existing.id;
         c.schema ??= existing.schema;
         c.tls ??= existing.tls;
+        c.fieldNames ??= existing.fieldNames;
         replaced.push(c.name);
         this.collections[this.collections.indexOf(existing)] = c;
       } else {

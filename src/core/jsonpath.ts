@@ -134,3 +134,51 @@ export function suggestVariableName(path: Segment[], methodName = ''): string {
   if (keys.length >= 2 && /^(value|units|amount|code|name)$/i.test(last)) return camel(`${keys.at(-2)}_${last}`);
   return camel(last);
 }
+
+/** Names too common to match on their own (`id` of what?); they need a matching parent too. */
+const GENERIC_KEYS = new Set(['id', 'name', 'value', 'type', 'status', 'key', 'code', 'description']);
+
+/** Whether a request value still looks like a template placeholder rather than something the user typed. */
+export function isPlaceholder(value: unknown): boolean {
+  if (value === undefined || value === null || value === '' || value === 0 || value === false) return true;
+  return typeof value === 'string' && (/_UNSPECIFIED$/.test(value) || value === '0');
+}
+
+export interface FieldMatch {
+  /** where the value comes from in the response */
+  from: Segment[];
+  value: Json;
+  /** confident enough to tick by default: the name is specific, or its parents match too */
+  strong: boolean;
+}
+
+/**
+ * For each target field path, the response leaf that most likely holds its value:
+ * the last field name must match (tenant_id ~ tenantId); more matching parent names
+ * win, then the leaf nearest to `near` (the value the user picked).
+ */
+export function matchFields(source: Array<{ path: Segment[]; value: Json }>, targets: Segment[][], near: Segment[] = []): Array<FieldMatch | undefined> {
+  const names = (p: Segment[]) => p.filter((s): s is string => typeof s === 'string').map(normalizeKey).reverse();
+  const shared = (a: Segment[], b: Segment[]) => {
+    let n = 0;
+    while (n < a.length && n < b.length && a[n] === b[n]) n++;
+    return n;
+  };
+  const sourceNames = source.map((l) => names(l.path));
+  return targets.map((target) => {
+    const want = names(target);
+    if (!want.length) return undefined;
+    let best: { i: number; depth: number; near: number } | undefined;
+    source.forEach((leaf, i) => {
+      const have = sourceNames[i]!;
+      if (have[0] !== want[0]) return;
+      let depth = 1;
+      while (depth < want.length && depth < have.length && have[depth] === want[depth]) depth++;
+      const closeness = shared(leaf.path, near);
+      if (!best || depth > best.depth || (depth === best.depth && closeness > best.near)) best = { i, depth, near: closeness };
+    });
+    if (!best) return undefined;
+    const { i, depth } = best;
+    return { from: source[i]!.path, value: source[i]!.value, strong: depth > 1 || !GENERIC_KEYS.has(want[0]!) };
+  });
+}

@@ -8,6 +8,7 @@ import { walkItems } from '../src/core/model.js';
 import { Workspace } from '../src/core/workspace.js';
 import { App } from '../src/ui/App.js';
 import { ResponsePanel, responseLines } from '../src/ui/components/ResponsePanel.js';
+import { ChecklistModal } from '../src/ui/components/Modals.js';
 
 const EXAMPLES = join(import.meta.dirname, '..', 'examples');
 const homes: string[] = [];
@@ -57,6 +58,20 @@ describe('App renders', () => {
     if (item.type === 'http') item.scripts = [{ type: 'afterResponse', code: "bru.setEnvVar('a', 1);\nbru.setEnvVar('b', 2);" }];
     expect(frame(ws)).toMatch(/Scripts\s+post-response \(2 lines\)/);
   });
+
+  it('with the values of {{vars}} in grey after message lines', () => {
+    const ws = workspaceWith('Say hello');
+    const item = [...walkItems(ws.collections[0]!.items)].find((x) => x.item.name === 'Say hello')!.item;
+    if (item.type === 'grpc') item.message = '{\n  "name": "{{user}}",\n  "token": "{{token}}",\n  "id": "{{$guid}}",\n  "missing": "{{nope}}"\n}';
+    ws.saveCollection(ws.collections[0]!);
+    ws.saveState({ ...ws.state, layout: 'side-by-side', activeEnvironmentId: ws.environments.find((e) => e.name === 'Local')!.id });
+    const out = frame(ws);
+    expect(out).toMatch(/"name": "\{\{user\}\}",\s+→ Ada/);
+    expect(out).toMatch(/"token": "\{\{token\}\}",\s+→ de/);
+    expect(out).not.toContain('demo-token'); // secrets are masked
+    expect(out).not.toMatch(/\{\{\$guid\}\}",\s+→/);
+    expect(out).not.toMatch(/\{\{nope\}\}",\s+→/);
+  });
 });
 
 describe('ResponsePanel', () => {
@@ -67,5 +82,30 @@ describe('ResponsePanel', () => {
     const text = lastFrame()!.replace(/[│╭╮╰╯─]/g, ' ').replace(/\s*\n\s*(\/\/)?\s*/g, ' ');
     expect(text).toContain('expected object, got string');
     expect(responseLines(result, 'messages', 56).filter((l) => l.kind === 'error').length).toBeGreaterThan(1);
+  });
+});
+
+describe('ChecklistModal', () => {
+  it('toggles items and submits the ticked ones', async () => {
+    let submitted: number[] | undefined;
+    const items = [
+      { label: 'tenant_id ← [0].tenantId', checked: true },
+      { label: 'company_id ← [0].companyId', checked: true },
+      { label: 'id ← [0].id', checked: false },
+    ];
+    const app = render(<ChecklistModal title="Fill" items={items} width={60} height={10} onSubmit={(c) => (submitted = c)} onCancel={() => {}} />);
+    expect(app.lastFrame()).toContain('[x] tenant_id');
+    expect(app.lastFrame()).toContain('enter: apply 2');
+    const key = async (k: string) => {
+      app.stdin.write(k);
+      await new Promise((r) => setTimeout(r, 20));
+    };
+    await key('\u001B[B'); // down to company_id
+    await key(' '); // untick
+    await key('\u001B[B');
+    await key(' '); // tick id
+    await key('\r');
+    expect(submitted).toEqual([0, 2]);
+    app.unmount();
   });
 });

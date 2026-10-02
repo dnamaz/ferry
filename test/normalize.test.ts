@@ -5,7 +5,9 @@ import { loadProtoFiles } from '../src/grpc/proto-files.js';
 import { encodeMessages } from '../src/grpc/invoke.js';
 import { toGrpcurl } from '../src/grpc/grpcurl.js';
 import { normalizeJson } from '../src/grpc/normalize.js';
-import { Schema, type MethodInfo } from '../src/grpc/schema.js';
+import { Schema, type MethodInfo, methodTemplate } from '../src/grpc/schema.js';
+import { resolveRequest } from '../src/core/resolve.js';
+import { newGrpcRequest } from '../src/core/model.js';
 import type { ResolvedRequest } from '../src/core/resolve.js';
 
 let schema: Schema;
@@ -33,6 +35,25 @@ const CANONICAL = {
   item: { note: 'n' },
   extra: { seconds: 1, value: 'kept as a Struct' },
 };
+
+describe('field names', () => {
+  it('templates use JSON names by default and proto names when asked', () => {
+    expect(JSON.parse(methodTemplate(method)).itemsById).toBeDefined();
+    const proto = JSON.parse(methodTemplate(method, { protoNames: true }));
+    expect(proto.items_by_id).toBeDefined();
+    expect(proto.items[0].created_at).toBeDefined();
+  });
+
+  it('come from the collection setting', () => {
+    const col = { id: 'c', name: 'C', variables: [], items: [] };
+    expect(resolveRequest(newGrpcRequest({ url: 'h:1' }), { collection: { ...col, fieldNames: 'proto' } }).protoFieldNames).toBe(true);
+    expect(resolveRequest(newGrpcRequest({ url: 'h:1' }), { collection: col }).protoFieldNames).toBeUndefined();
+  });
+
+  it('either spelling encodes to the same message', () => {
+    expect(roundTrip({ items_by_id: { a: { created_at: '2026-01-01T00:00:00Z' } } })).toEqual(roundTrip({ itemsById: { a: { createdAt: '2026-01-01T00:00:00Z' } } }));
+  });
+});
 
 describe('protobufjs object form (Bruno, proto-loader)', () => {
   it('encodes to the same message as canonical proto3 JSON', () => {

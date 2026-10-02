@@ -44,6 +44,12 @@ describe.each(Object.entries(sources))('via %s', (_, load) => {
     expect(r.trailers).toContainEqual(['x-served-by', 'demo-server']);
   });
 
+  it('prints proto field names when asked', async () => {
+    const message = '{"name":"Ada"}';
+    const r = await invoke({ url, schema, method: schema.findMethod('demo.greeter.v1.Greeter/SayHello')!, message, protoFieldNames: true }).done;
+    expect(r.messages).toEqual([{ message: 'Hello, Ada!', sent_at: expect.stringMatching(/^\d{4}-/) }]);
+  });
+
   it('streams server messages', async () => {
     const r = await call('/demo.greeter.v1.Greeter/StreamGreetings', '{"name":"B","times":2}');
     expect(r.messages).toHaveLength(2);

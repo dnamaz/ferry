@@ -196,6 +196,8 @@ export interface Collection {
   /** default schema source for requests that don't set one */
   schema?: SchemaSource;
   tls?: TlsFiles;
+  /** gRPC JSON field names in responses and templates: `proto` (tenant_id) or `json` (tenantId, the default). Not part of the Postman format. */
+  fieldNames?: 'proto' | 'json';
   items: Item[];
   extra?: Record<string, unknown>;
   importedFrom?: string;

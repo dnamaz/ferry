@@ -110,6 +110,82 @@ export interface PickerItem<T> {
   keywords?: string;
 }
 
+export interface ChecklistItem {
+  label: string;
+  hint?: string;
+  checked: boolean;
+}
+
+/** A list of items to tick; enter returns the indexes of the ticked ones. */
+export function ChecklistModal({
+  title,
+  note,
+  items,
+  width,
+  height,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  /** one line under the title */
+  note?: string;
+  items: ChecklistItem[];
+  width: number;
+  height: number;
+  onSubmit: (checked: number[]) => void;
+  onCancel: () => void;
+}) {
+  const [checked, setChecked] = useState(() => items.map((i) => i.checked));
+  const [index, setIndex] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const listHeight = Math.max(1, height - 4 - (note ? 1 : 0));
+  const scroll = scrollInto(index, offset, listHeight);
+  if (scroll !== offset) setOffset(scroll);
+
+  useInput((input, key) => {
+    if (key.escape) return onCancel();
+    const move = (to: number) => setIndex(clamp(to, 0, items.length - 1));
+    if (key.upArrow || input === 'k') return move(index - 1);
+    if (key.downArrow || input === 'j') return move(index + 1);
+    if (key.pageUp) return move(index - listHeight);
+    if (key.pageDown) return move(index + listHeight);
+    if (input === ' ') return setChecked((c) => c.map((v, i) => (i === index ? !v : v)));
+    if (input === 'a') return setChecked((c) => c.map(() => !c.every(Boolean)));
+    if (key.return) onSubmit(checked.flatMap((v, i) => (v ? [i] : [])));
+  });
+
+  const inner = width - 4;
+  const count = checked.filter(Boolean).length;
+  return (
+    <ModalFrame title={title} width={width} height={height} footer={`space: tick · a: all/none · enter: apply ${count} · esc: cancel`}>
+      {note ? (
+        <Text color={theme.muted} wrap="truncate-end">
+          {note}
+        </Text>
+      ) : null}
+      {items.slice(scroll, scroll + listHeight).map((item, i) => {
+        const at = scroll + i;
+        const selected = at === index;
+        const hint = item.hint ? `  ${item.hint}` : '';
+        const box = checked[at] ? '[x] ' : '[ ] ';
+        const labelWidth = Math.max(4, Math.min(item.label.length, inner - 2 - box.length - Math.min(hint.length, Math.floor(inner / 2))));
+        return (
+          <Box key={at}>
+            <Text color={selected ? theme.accent : undefined}>{selected ? '› ' : '  '}</Text>
+            <Text color={checked[at] ? theme.ok : theme.muted}>{box}</Text>
+            <Text bold={selected} wrap="truncate-end">
+              {truncate(item.label, labelWidth)}
+            </Text>
+            <Text color={theme.muted} wrap="truncate-end">
+              {truncate(hint, inner - 2 - box.length - labelWidth)}
+            </Text>
+          </Box>
+        );
+      })}
+    </ModalFrame>
+  );
+}
+
 export function PickerModal<T>({
   title,
   items,
