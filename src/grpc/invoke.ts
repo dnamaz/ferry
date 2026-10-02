@@ -37,6 +37,9 @@ export interface CallResult {
   sent: number;
   startedAt: number;
   durationMs?: number;
+  /** protobuf bytes of the messages sent / received (excludes metadata and the 5-byte gRPC frame header) */
+  requestBytes?: number;
+  responseBytes?: number;
   /** where the time went (connection phases, wait, receive), once the call has finished */
   timing?: Timing;
   /** client-side problem (bad JSON, unknown field, connection timeout...) */
@@ -121,6 +124,7 @@ export function invoke(opts: InvokeOptions): CallHandle {
   };
 
   const decode = (buf: Buffer): JsonValue => {
+    result.responseBytes = (result.responseBytes ?? 0) + buf.length;
     const msg = fromBinary(method.desc.output, buf);
     return toJson(method.desc.output, msg, { registry: schema.registry, alwaysEmitImplicit: includeDefaults, useProtoFieldName: opts.protoFieldNames });
   };
@@ -128,6 +132,7 @@ export function invoke(opts: InvokeOptions): CallHandle {
 
   const run = async () => {
     const payloads = encodeMessages(schema, method, opts.message);
+    result.responseBytes = 0;
     client = createClient(opts.url, settings, opts.tls, opts.baseDir, marks);
 
     // Whichever comes first starts the connection: waitForReady here, or the call below.
@@ -188,6 +193,7 @@ export function invoke(opts: InvokeOptions): CallHandle {
         break;
       }
     }
+    result.requestBytes = payloads.slice(0, result.sent).reduce((n, p) => n + p.length, 0);
     update();
 
     call.on('metadata', (m: grpc.Metadata) => {

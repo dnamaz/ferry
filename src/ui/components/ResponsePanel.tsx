@@ -93,12 +93,29 @@ export function timingLines(result: AnyResult, width = 80): ResponseLine[] {
     const bar = total > 0 ? '█'.repeat(Math.round((p.ms / total) * barMax)) || (p.ms > 0 ? '▏' : '') : '';
     lines.push({ text: `${`${p.name}:`.padEnd(label + 1)}${fmtMs(p.ms).padStart(num)}  ${PHASE_HINT[p.name].padEnd(hint)}  ${bar}`, kind: 'meta' });
   }
+  const sizes = transferSizes(result);
+  lines.push(
+    { text: '', kind: 'comment' },
+    { text: `// ${sizes.note}`, kind: 'comment' },
+    { text: `sent:     ${sizes.sent}`, kind: 'meta' },
+    { text: `received: ${sizes.received}`, kind: 'meta' },
+  );
   if (t.serverMs !== undefined) {
     const wait = t.phases.find((p) => p.name === 'wait')?.ms;
     lines.push({ text: '', kind: 'comment' }, { text: `// server reported ${fmtMs(t.serverMs)} (${t.serverSource})`, kind: 'comment' });
     if (wait !== undefined) lines.push({ text: `// so about ${fmtMs(Math.max(0, wait - t.serverMs))} of the ${fmtMs(wait)} wait is network and proxies`, kind: 'comment' });
   }
   return lines;
+}
+
+function transferSizes(r: AnyResult): { sent: string; received: string; note: string } {
+  if (isHttpResult(r)) return { sent: formatBytes(r.requestBytes ?? 0), received: formatBytes(r.body.length), note: 'body sizes (headers not included)' };
+  const msgs = (n: number) => ` in ${n} message${n === 1 ? '' : 's'}`;
+  return {
+    sent: formatBytes(r.requestBytes ?? 0) + msgs(r.sent),
+    received: formatBytes(r.responseBytes ?? 0) + msgs(r.messages.length),
+    note: 'protobuf message sizes (metadata and the 5-byte frame header per message not included)',
+  };
 }
 
 const fmtMs = (ms: number) => `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
@@ -198,7 +215,7 @@ export function ResponsePanel({ width, height, focused, result, tab, offset, spi
       status = (
         <Text wrap="truncate-end">
           <Text color={theme.info}>{spinner} {result.status ? `${result.status} receiving` : 'waiting'}</Text>
-          <Text color={theme.muted}> · {took} · {size} · ctrl+c: cancel</Text>
+          <Text color={theme.muted}> · {took} · ↓ {size} · ctrl+c: cancel</Text>
         </Text>
       );
     } else if (result.status === undefined) {
@@ -218,7 +235,7 @@ export function ResponsePanel({ width, height, focused, result, tab, offset, spi
           </Text>
           <Text color={theme.muted}>
             {' '}
-            · {took} · {size}
+            · {took} · ↑ {formatBytes(result.requestBytes ?? 0)} ↓ {size}
             {result.contentType ? ` · ${result.contentType.split(';')[0]}` : ''}
           </Text>
         </Text>
@@ -226,8 +243,11 @@ export function ResponsePanel({ width, height, focused, result, tab, offset, spi
     }
   } else if (result) {
     const count = result.messages.length;
-    const stats = [formatDuration(result.durationMs ?? Date.now() - result.startedAt), `${count} msg${count === 1 ? '' : 's'}`];
-    if (result.sent > 1) stats.push(`${result.sent} sent`);
+    const stats = [
+      formatDuration(result.durationMs ?? Date.now() - result.startedAt),
+      `↑ ${result.sent > 1 ? `${result.sent} msgs ` : ''}${formatBytes(result.requestBytes ?? 0)}`,
+      `↓ ${count} msg${count === 1 ? '' : 's'} ${formatBytes(result.responseBytes ?? 0)}`,
+    ];
     if (result.state === 'running') {
       status = (
         <Text>

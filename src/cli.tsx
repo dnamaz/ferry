@@ -213,7 +213,7 @@ async function runCall(opts: Parameters<typeof invoke>[0], verbose: boolean, aft
   if (verbose) {
     for (const [k, v] of r.headers) process.stderr.write(`< ${k}: ${v}\n`);
     for (const [k, v] of r.trailers) process.stderr.write(`< (trailer) ${k}: ${v}\n`);
-    process.stderr.write(`status: ${r.codeName ?? r.state} (${r.durationMs} ms)\n`);
+    process.stderr.write(`status: ${r.codeName ?? r.state} (${r.durationMs} ms, sent ${r.requestBytes ?? 0} bytes, received ${r.responseBytes ?? 0} bytes)\n`);
     writeTiming(r.timing);
   }
   if (r.state !== 'cancelled' && r.code !== undefined) await after?.(r);
@@ -431,7 +431,7 @@ async function runHttp(
   if (o.verbose) {
     process.stderr.write(`< ${res.status} ${res.statusText}\n`);
     for (const [k, v] of res.headers) process.stderr.write(`< ${k}: ${v}\n`);
-    process.stderr.write(`(${res.durationMs} ms, ${res.body.length} bytes)\n`);
+    process.stderr.write(`(${res.durationMs} ms, sent ${res.requestBytes ?? 0} bytes, received ${res.body.length} bytes)\n`);
     writeTiming(res.timing);
   }
   if (o.output) {

@@ -26,6 +26,8 @@ export interface HttpResult {
   durationMs?: number;
   /** time to response headers */
   ttfbMs?: number;
+  /** request body bytes put on the wire (headers not included); the response size is `body.length` */
+  requestBytes?: number;
   /** where the time went (connection phases, wait, receive), once the request has finished */
   timing?: Timing;
   error?: string;
@@ -61,6 +63,7 @@ interface RequestMarks {
   created?: number;
   sent?: number;
   bodySent?: number;
+  bodyBytes: number;
   headers?: number;
   socket?: SocketMarks;
   reused?: boolean;
@@ -76,7 +79,7 @@ diagnostics.subscribe('undici:request:create', (msg) => {
   const { request } = msg as DiagnosticsChannel.RequestCreateMessage;
   requests.set(request, m);
   // A redirect starts over: only the last request's phases are kept.
-  Object.assign(m, { requests: m.requests + 1, created: performance.now(), sent: undefined, bodySent: undefined, headers: undefined, socket: undefined, reused: undefined });
+  Object.assign(m, { requests: m.requests + 1, created: performance.now(), sent: undefined, bodySent: undefined, bodyBytes: 0, headers: undefined, socket: undefined, reused: undefined });
 });
 diagnostics.subscribe('undici:client:sendHeaders', (msg) => {
   const { request, socket } = msg as DiagnosticsChannel.ClientSendHeadersMessage;
@@ -94,6 +97,11 @@ diagnostics.subscribe('undici:client:sendHeaders', (msg) => {
 diagnostics.subscribe('undici:request:bodySent', (msg) => {
   const m = requests.get((msg as DiagnosticsChannel.RequestBodySentMessage).request);
   if (m) m.bodySent = performance.now();
+});
+diagnostics.subscribe('undici:request:bodyChunkSent', (msg) => {
+  const { request, chunk } = msg as DiagnosticsChannel.RequestBodyChunkSentMessage;
+  const m = requests.get(request);
+  if (m) m.bodyBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
 });
 diagnostics.subscribe('undici:request:headers', (msg) => {
   const m = requests.get((msg as DiagnosticsChannel.RequestHeadersMessage).request);
@@ -253,7 +261,7 @@ async function buildBody(r: ResolvedHttpRequest): Promise<{ body?: string | Buff
 export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) => void, opts: { oauthToken?: string } = {}): HttpHandle {
   const result: HttpResult = { kind: 'http', state: 'running', headers: [], body: Buffer.alloc(0), startedAt: Date.now() };
   const t0 = performance.now();
-  const marks: RequestMarks = { requests: 0 };
+  const marks: RequestMarks = { requests: 0, bodyBytes: 0 };
   let hasBody = false;
   const controller = new AbortController();
   let cancelled = false;
@@ -332,7 +340,10 @@ export function sendHttp(r: ResolvedHttpRequest, onUpdate?: (res: HttpResult) =>
     .then(() => {
       result.durationMs = Date.now() - result.startedAt;
       // No timing for a request that never went out (bad URL, connection refused): there is nothing to split.
-      if (marks.sent !== undefined) result.timing = requestTiming(marks, t0, performance.now(), hasBody, result.headers);
+      if (marks.sent !== undefined) {
+        result.timing = requestTiming(marks, t0, performance.now(), hasBody, result.headers);
+        result.requestBytes = marks.bodyBytes;
+      }
       update(true);
       return { ...result };
     });

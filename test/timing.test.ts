@@ -82,6 +82,10 @@ describe('gRPC call timing', () => {
     expect(names(r.timing)).toEqual(['prepare', 'dns', 'connect', 'http2', 'wait', 'receive']);
     expect(r.timing!.phases.every((p) => p.ms >= 0)).toBe(true);
     expect(Math.abs(sum(r.timing) - r.durationMs!)).toBeLessThan(2);
+    // {"name":"t"} is field 1, length 1, "t": 3 bytes on the wire.
+    expect(r.requestBytes).toBe(3);
+    expect(r.responseBytes).toBeGreaterThan(0);
+    expect(timingLines(r).find((l) => l.text.startsWith('sent:'))?.text).toBe('sent:     3 B in 1 message');
   });
 });
 
@@ -121,6 +125,17 @@ describe('HTTP request timing', () => {
     } finally {
       server.off('connection', count);
     }
+  });
+
+  it('counts the request body bytes it sent', async () => {
+    const body = JSON.stringify({ title: 'héllo' }); // é is 2 bytes in UTF-8
+    const r = await sendHttp(
+      resolveHttpRequest(newHttpRequest({ url: `${base}/notes`, method: 'POST', body: { type: 'json', content: body } }), {}),
+    ).done;
+    expect(r.requestBytes).toBe(Buffer.byteLength(body));
+    expect(names(r.timing)).toContain('send');
+    const get = await sendHttp(resolveHttpRequest(newHttpRequest({ url: `${base}/healthz`, method: 'GET' }), {})).done;
+    expect(get.requestBytes).toBe(0);
   });
 
   it('has no timing when the request never went out', async () => {
