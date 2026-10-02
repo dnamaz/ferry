@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { render } from 'ink';
 import { Command, Option } from 'commander';
 import { existsSync, statSync } from 'node:fs';
@@ -32,6 +32,7 @@ import {
 } from './core/scripts.js';
 import { describeMethod, kindLabel, methodTemplate } from './grpc/schema.js';
 import { App } from './ui/App.js';
+import { Splash } from './ui/components/Splash.js';
 import { ALT_SCREEN_OFF, ALT_SCREEN_ON, setInkClear } from './ui/terminal.js';
 
 process.stdout.on('error', (err: NodeJS.ErrnoException) => {
@@ -42,11 +43,20 @@ process.stdout.on('error', (err: NodeJS.ErrnoException) => {
 const migrated = migrateLegacyHome();
 if (migrated) process.stderr.write(`ferry: moved your data from ${migrated} to ~/.ferry\n`);
 
+const VERSION = '0.1.0';
+
+/** Shows the start-up splash, then swaps in the app. */
+function Root({ workspace, splash }: { workspace: Workspace; splash: boolean }) {
+  const [showSplash, setShowSplash] = useState(splash);
+  const done = useCallback(() => setShowSplash(false), []);
+  return showSplash ? <Splash version={VERSION} onDone={done} /> : <App workspace={workspace} />;
+}
+
 const program = new Command()
   .name('ferry')
   .description('Terminal API client for gRPC and REST — discover services, manage collections, import Postman and Bruno, export Postman.\nRun without a command to open the interactive UI.')
   .option('--home <dir>', 'data directory', defaultHome())
-  .version('0.1.0');
+  .version(VERSION);
 
 const ws = () => new Workspace(resolve(program.opts().home as string));
 
@@ -557,7 +567,8 @@ program
   .command('ui', { isDefault: true })
   .description('Open the interactive terminal UI (default)')
   .addOption(new Option('--no-alt-screen', 'render in the main terminal buffer'))
-  .action(async (o: { altScreen: boolean }) => {
+  .addOption(new Option('--no-splash', 'skip the start-up ferry'))
+  .action(async (o: { altScreen: boolean; splash: boolean }) => {
     if (!process.stdin.isTTY) {
       process.stderr.write('The interactive UI needs a TTY. Use `ferry --help` for scriptable commands.\n');
       process.exit(1);
@@ -568,7 +579,7 @@ program
       if (o.altScreen) process.stdout.write(ALT_SCREEN_OFF);
     };
     process.on('exit', restore);
-    const instance = render(<App workspace={workspace} />, { exitOnCtrlC: false, patchConsole: true });
+    const instance = render(<Root workspace={workspace} splash={o.splash} />, { exitOnCtrlC: false, patchConsole: true });
     setInkClear(() => instance.clear());
     await instance.waitUntilExit();
     restore();
