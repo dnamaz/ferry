@@ -19,16 +19,14 @@ afterAll(() => {
   if (home) rmSync(home, { recursive: true, force: true });
 });
 
-it('fills other matching fields of the target request from the same response', async () => {
-  home = mkdtempSync(join(tmpdir(), 'ferry-use-'));
+it('edits, checks and test-runs a script in place', async () => {
+  home = mkdtempSync(join(tmpdir(), 'ferry-script-'));
   const ws = new Workspace(home);
   ws.importPath(join(import.meta.dirname, '..', 'examples'));
   const env = ws.environments.find((e) => e.name === 'Local')!;
   ws.setVariable('host', `localhost:${port}`, { environment: env });
-  const find = (n: string) => [...walkItems(ws.collections[0]!.items)].find((x) => x.item.name === n)!.item;
-  const source = find('Get item');
-  const target = find('Update quantity');
-  ws.saveState({ activeEnvironmentId: env.id, openTabs: [source.id, target.id], lastRequestId: source.id, layout: 'side-by-side' });
+  const item = [...walkItems(ws.collections[0]!.items)].find((x) => x.item.name === 'Say hello')!.item;
+  ws.saveState({ activeEnvironmentId: env.id, openTabs: [item.id], lastRequestId: item.id });
 
   const app = render(<App workspace={ws} />);
   const until = async (text: string) => {
@@ -41,20 +39,29 @@ it('fills other matching fields of the target request from the same response', a
       await new Promise((r) => setTimeout(r, 40));
     }
   };
+  const down = '\u001B[B';
 
-  await until('Get item');
+  await until('Say hello');
   await keys('\x12'); // ctrl+r
   await until('OK (0)');
-  await keys('\t', '\t', '\r', 'u'); // response pane → select the first value (sku) → use in another request
-  await until('Set which field of "Update quantity"');
-  await keys('\r'); // item.sku is preselected
-  await until('[x] item.sku ← [0].sku');
-  expect(app.lastFrame()).toContain('[ ] item.quantity ← [0].quantity  = 42  (now "12")'); // has a value already: not ticked
-  await keys('\u001B[B', ' ', '\r'); // tick quantity too
-  await until('"quantity": "42"');
-  expect(app.lastFrame()).toContain('"sku": "SKU-001"');
-  // the unsaved marker fits in the header, so it doesn't wrap and push the Scripts row out
-  expect(app.lastFrame()).toContain('*unsaved');
-  expect(app.lastFrame()).toMatch(/Scripts\s+none/);
+  await keys('\t', ...Array(6).fill(down), '\r'); // request pane → Scripts
+  await until('New post-response script');
+  await keys('\r');
+  await until('post-response script · Say hello');
+  await keys(...Array(9).fill(down)); // below the commented example
+
+  await keys("pm.test('greets', () => pm.expect(res.getBody().message).to.include('Ada'");
+  await keys('\r', "bru.setEnvVar('greeting', res.getBody().message);");
+  await until('✗ line 11:1'); // the missing ")" on line 10 is caught as you type
+  await keys('\u001B[A', '\u0005', '));'); // up, ctrl+e: end of line, close the call
+  await until('✓ syntax OK');
+
+  await keys('\u0014'); // ctrl+t
+  await until('✓ greets');
+  expect(app.lastFrame()).toContain('would set {{greeting}} = Bonjour, Ada!');
+  expect(ws.environments.find((e) => e.id === env.id)!.values.some((v) => v.key === 'greeting')).toBe(false);
+
+  await keys('\u001B'); // esc: done
+  await until('post-response (');
   app.unmount();
 }, 20_000);

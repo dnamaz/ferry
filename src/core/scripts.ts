@@ -178,6 +178,40 @@ function compile(code: string, language: string | undefined): vm.Script {
   }
 }
 
+export interface ScriptProblem {
+  message: string;
+  /** 1-based, when known */
+  line?: number;
+  column?: number;
+}
+
+/** Syntax-checks a script the way it will be compiled (JavaScript, else TypeScript) without running it. */
+export function checkScript(code: string, language?: string): ScriptProblem | undefined {
+  try {
+    compile(code, language);
+    return undefined;
+  } catch (first) {
+    // compile() falls back to TypeScript; its parser explains TS mistakes better than V8 does.
+    let err = first;
+    if (stripTypes && !(language && /typescript|\bts\b/i.test(language))) {
+      try {
+        stripTypeScript(code);
+      } catch (tsErr) {
+        err = tsErr;
+      }
+    }
+    return problemFrom(err);
+  }
+}
+
+/** Line and column from V8 / Node TypeScript syntax errors, whose stacks start with `<file>:LINE`, the source line and a caret. */
+function problemFrom(err: unknown): ScriptProblem {
+  const e = err as Error;
+  // TypeScript errors may quote several lines before the caret line.
+  const at = /^(?:ferry-script)?:(\d+)\n(?:[^\n]*\n)*?([ \t]*)\^/.exec(e.stack ?? '');
+  return { message: e.message ?? String(err), ...(at ? { line: Number(at[1]), column: at[2]!.length + 1 } : {}) };
+}
+
 // ---------------------------------------------------------------------------
 // Sandbox
 // ---------------------------------------------------------------------------
@@ -621,4 +655,18 @@ export function summarizeOutcome(outcome: ScriptOutcome, mask: (name: string, va
 
 function truncateMiddle(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+/** Reads real variables but keeps writes in memory, for test runs that must not change anything. */
+export function dryRunVars(real: ScriptVars): ScriptVars {
+  const overlay = new Map<string, string | undefined>();
+  return {
+    get: (scope, name) => (overlay.has(name) ? overlay.get(name) : real.get(scope, name)),
+    set: (scope, name, value) => {
+      overlay.set(name, value);
+      return `${scope === 'environment' && real.environmentName ? `environment "${real.environmentName}"` : scope}, not saved`;
+    },
+    unset: (_scope, name) => void overlay.set(name, undefined),
+    environmentName: real.environmentName,
+  };
 }

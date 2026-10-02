@@ -207,7 +207,7 @@ export function HttpRequestPanel(props: Props) {
           Request{' '}
         </Text>
         <Text color={theme.muted} wrap="truncate-end">
-          {truncate(props.breadcrumb, inner - 12)}
+          {truncate(props.breadcrumb, inner - 8 - (props.dirty ? 9 : 0))}
         </Text>
         {props.dirty ? <Text color={theme.warn}> {icons.dirty}unsaved</Text> : null}
       </Box>

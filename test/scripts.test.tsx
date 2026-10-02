@@ -11,6 +11,8 @@ import { resolveHttpRequest, resolveRequest } from '../src/core/resolve.js';
 import {
   type ScriptResponseInfo,
   type ScriptVars,
+  checkScript,
+  dryRunVars,
   httpRequestInfo,
   httpResponseInfo,
   runPhase,
@@ -170,6 +172,30 @@ describe('script runner', () => {
       ['request', 'r'],
     ]);
     expect(scriptsFor('before', req, [folder], collection).map((s) => s.script.code)).toEqual(['rb']);
+  });
+});
+
+describe('script checks', () => {
+  it('finds syntax errors with their line and column, in JavaScript and TypeScript', () => {
+    expect(checkScript('const a: number = 1;\nbru.setEnvVar("a", a);')).toBeUndefined();
+    expect(checkScript('const a = 1;\nconst b = ;')).toMatchObject({ line: 2, column: 11 });
+    // a missing ")" is noticed where the next statement starts
+    expect(checkScript("pm.test('x', () => pm.expect(1).to.equal(1)\nbru.setEnvVar('a', 1);")).toMatchObject({ message: expect.stringMatching(/expected/i), line: 2, column: 1 });
+  });
+
+  it('test runs read real variables but never write them', async () => {
+    const store: Record<string, string> = { token: 't0' };
+    const real: ScriptVars = {
+      get: (_s, n) => store[n],
+      set: (_s, n, v) => ((store[n] = v), 'environment'),
+      unset: (_s, n) => void delete store[n],
+      environmentName: 'Dev',
+    };
+    const code = "bru.setEnvVar('token', bru.getEnvVar('token') + '-new'); console.log(bru.getEnvVar('token'));";
+    const outcome = await runScripts({ phase: 'before', scripts: [{ script: { type: 'beforeRequest', code }, from: 'request' }], request: { name: 'r', url: 'u', method: 'GET', headers: [] }, vars: dryRunVars(real) });
+    expect(outcome.logs).toEqual(['t0-new']);
+    expect(outcome.set).toEqual([{ scope: 'environment', name: 'token', value: 't0-new', where: 'environment "Dev", not saved' }]);
+    expect(store.token).toBe('t0');
   });
 });
 

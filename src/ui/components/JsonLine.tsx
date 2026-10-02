@@ -1,7 +1,7 @@
 import React from 'react';
 import { Text } from 'ink';
 import { theme } from '../theme.js';
-import { type Token, tokenizeJsonLine, truncate } from '../util.js';
+import { type CodeToken, type Token, tokenizeCodeLine, tokenizeJsonLine, truncate } from '../util.js';
 
 const COLORS: Record<Token['kind'], string | undefined> = {
   key: theme.json.key,
@@ -103,6 +103,23 @@ interface LineProps {
 export function JsonLine({ line, width, offset = 0, dim, vars, values }: LineProps & { dim?: boolean }) {
   const segments = tokenizeJsonLine(line).map((t) => ({ text: t.text, color: t.kind === 'var' ? varColor(t.text, vars) : COLORS[t.kind], bold: t.kind === 'var', underline: t.kind === 'var' && !varSet(t.text, vars) }));
   return <Segments segments={withValues(clip(segments, offset, width), line, width, values)} dim={dim} />;
+}
+
+const CODE_COLORS: Record<CodeToken['kind'], string | undefined> = {
+  comment: theme.muted,
+  string: theme.json.string,
+  number: theme.json.number,
+  keyword: theme.info,
+  literal: theme.json.literal,
+  api: theme.accent,
+  var: theme.vars.set,
+  plain: undefined,
+};
+
+/** A JavaScript/TypeScript line (scripts). */
+export function CodeLine({ line, width, offset = 0 }: { line: string; width: number; offset?: number }) {
+  const segments = tokenizeCodeLine(line).map((t) => ({ text: t.text, color: CODE_COLORS[t.kind], bold: t.kind === 'api' }));
+  return <Segments segments={clip(segments, offset, width)} />;
 }
 
 /** A non-JSON line with only `{{vars}}` highlighted. */

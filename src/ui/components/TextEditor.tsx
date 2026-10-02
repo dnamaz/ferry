@@ -2,7 +2,7 @@ import React, { useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { theme } from '../theme.js';
 import { clamp, tryFormatJson } from '../util.js';
-import { CursorLine, JsonLine, PlainLine, type VarLookup, varAt } from './JsonLine.js';
+import { CodeLine, CursorLine, JsonLine, PlainLine, type VarLookup, varAt } from './JsonLine.js';
 import { TextField } from './TextField.js';
 
 interface Props {
@@ -14,6 +14,10 @@ interface Props {
   onExit?: () => void;
   /** show JSON syntax colors */
   json?: boolean;
+  /** show JavaScript/TypeScript syntax colors (overrides `json`) */
+  code?: boolean;
+  /** 1-based line to flag in the gutter (e.g. a syntax error) */
+  errorLine?: number;
   /** colors `{{vars}}` by whether they have a value */
   vars?: VarLookup;
   /** enables enter on a `{{var}}` to set its value in place */
@@ -36,7 +40,7 @@ interface EditorState {
  * ctrl+k (kill to end of line), ctrl+u (kill to start), ctrl+f (format JSON), esc (exit).
  * With `onSetVar`, enter on a `{{var}}` edits the variable's value on a row under the line instead.
  */
-export function TextEditor({ value, onChange, width, height, active, onExit, json = true, vars, onSetVar }: Props) {
+export function TextEditor({ value, onChange, width, height, active, onExit, json = true, code, errorLine, vars, onSetVar }: Props) {
   const state = useRef<EditorState>({ text: value, row: 0, col: 0, scroll: 0 });
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [varEdit, setVarEdit] = useState<{ name: string; draft: string } | undefined>();
@@ -186,11 +190,13 @@ export function TextEditor({ value, onChange, width, height, active, onExit, jso
         return (
           <React.Fragment key={lineNo}>
             <Box>
-              <Text color={isCursorLine ? theme.accent : theme.muted} dimColor={!isCursorLine}>
-                {String(lineNo + 1).padStart(gutter - 1)}{' '}
+              <Text color={lineNo + 1 === errorLine ? theme.error : isCursorLine ? theme.accent : theme.muted} dimColor={!isCursorLine && lineNo + 1 !== errorLine}>
+                {lineNo + 1 === errorLine ? `${String(lineNo + 1).padStart(gutter - 2)}✗ ` : `${String(lineNo + 1).padStart(gutter - 1)} `}
               </Text>
               {isCursorLine ? (
                 <CursorLine line={line} col={s.col} offset={hOffset} width={textWidth} vars={vars} />
+              ) : code ? (
+                <CodeLine line={line} width={textWidth} offset={hOffset} />
               ) : json ? (
                 <JsonLine line={line} width={textWidth} offset={hOffset} vars={vars} />
               ) : (

@@ -28,17 +28,22 @@ import { evaluateCaptures, evaluateHttpCaptures } from '../core/captures.js';
 import {
   type ScriptOutcome,
   type ScriptPhase,
+  checkScript,
+  dryRunVars,
   grpcRequestInfo,
   grpcResponseInfo,
   httpRequestInfo,
   httpResponseInfo,
   isPhase,
   runPhase,
+  runScripts,
   scriptsFor,
   secretMask,
   summarizeOutcome,
   withLocals,
+  workspaceVars,
 } from '../core/scripts.js';
+import { type OutputLine, ScriptEditorModal } from './components/ScriptEditor.js';
 import { type Segment, formatPath, isPlaceholder, leaves, matchFields, normalizeKey, setInJsonText, suggestVariableName, valueToString } from '../core/jsonpath.js';
 import { type OAuthConfig, buildScopes, effectiveAuth, oauthFields, resolveHttpRequest, resolveRequest } from '../core/resolve.js';
 import { cachedToken, describeExpiry, getToken, withToken } from '../http/oauth.js';
@@ -87,6 +92,7 @@ type Modal =
   | { type: 'confirm'; title: string; message: string; onConfirm: () => void }
   | { type: 'picker'; title: string; items: PickerItem<unknown>[]; onSelect: (v: unknown) => void; emptyText?: string; initialIndex?: number; footer?: string }
   | { type: 'checklist'; title: string; note?: string; items: ChecklistItem[]; onSubmit: (checked: number[]) => void }
+  | { type: 'script'; title: string; initial: string; phase: ScriptPhase; onSave: (code: string) => void }
   | { type: 'text'; title: string; text: string; json?: boolean; copy?: string; wrap?: boolean; note?: string; altText?: string; altLabel?: string }
   | { type: 'form'; title: string; fields: (v: FormValues) => FormField[]; initial: FormValues; onSave: (v: FormValues) => void }
   | { type: 'kv'; title: string; rows: KVRow[]; allowSecret?: boolean; hint?: string; keyLabel?: string; valueLabel?: string; onSave: (rows: KVRow[]) => void }
@@ -155,6 +161,8 @@ CHAINING (response pane: enter to select a value)
   Scripts (request field) run JS/TS before the request / after the response:
     bru.setEnvVar('accessToken', res.getBody().access_token)
     pm.environment.set('accessToken', pm.response.json().access_token)
+  In the script editor: ctrl+t test run (nothing saved) · esc done
+                        ctrl+x discard · ctrl+o $EDITOR
 
 TABS
   [ / ]         previous / next tab          T        list open tabs (fuzzy)
@@ -1288,30 +1296,62 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
       type: 'picker',
       title: `Scripts · ${request.name}`,
       items: items as PickerItem<unknown>[],
-      footer: `enter: edit in $EDITOR (empty it to delete)${inherited.length ? ` · also runs: ${inherited.map((p) => `${p.from} ${scriptKind(p.script)}`).join(', ')}` : ''}`,
+      footer: `enter: edit (empty it to delete)${inherited.length ? ` · also runs: ${inherited.map((p) => `${p.from} ${scriptKind(p.script)}`).join(', ')}` : ''}`,
       onSelect: (v) => {
-        pop();
         const choice = v as Choice;
         const existing = 'index' in choice ? own[choice.index] : undefined;
         const phase: ScriptPhase = existing ? (isPhase(existing, 'before') ? 'before' : 'after') : (choice as { phase: ScriptPhase }).phase;
-        const template = scriptTemplate(phase, request.type);
-        const res = editInExternalEditor(existing?.code ?? template, '.ts');
-        setSpin((n) => n + 1);
-        if (res.error) return setToast(res.error, theme.error);
-        if (res.text === undefined) return;
-        const code = res.text.trim() ? res.text : '';
-        const blank = !code.split('\n').some((l) => l.trim() && !l.trim().startsWith('//'));
-        const next: Script[] = [...own];
-        if (existing) {
-          if (blank) next.splice(next.indexOf(existing), 1);
-          else next[next.indexOf(existing)] = { ...existing, code };
-        } else if (!blank) {
-          next.push({ type: phase === 'before' ? 'beforeRequest' : 'afterResponse', code, language: 'text/javascript' });
-        }
-        updateAny(activeId, (r) => ({ ...r, scripts: next.length ? next : undefined }));
-        setToast(blank ? (existing ? 'Script removed (ctrl+s to keep)' : 'No script added') : 'Script updated — it runs on the next send (ctrl+s to keep)', theme.ok);
+        replace({
+          type: 'script',
+          title: `${existing ? scriptKind(existing) : phase === 'before' ? 'pre-request' : 'post-response'} script · ${request.name}`,
+          initial: existing?.code ?? scriptTemplate(phase, request.type),
+          phase,
+          onSave: (text) => {
+            pop();
+            if (existing && text === existing.code) return;
+            const code = text.trim() ? text : '';
+            const blank = !code.split('\n').some((l) => l.trim() && !l.trim().startsWith('//'));
+            const next: Script[] = [...own];
+            if (existing) {
+              if (blank) next.splice(next.indexOf(existing), 1);
+              else next[next.indexOf(existing)] = { ...existing, code };
+            } else if (!blank) {
+              next.push({ type: phase === 'before' ? 'beforeRequest' : 'afterResponse', code, language: 'text/javascript' });
+            } else return;
+            updateAny(activeId, (r) => ({ ...r, scripts: next.length ? next : undefined }));
+            setToast(blank ? 'Script removed (ctrl+s to keep)' : 'Script updated — it runs on the next send (ctrl+s to keep)', theme.ok);
+          },
+        });
       },
     });
+  };
+
+  /** Runs `code` as this request's script without saving variable changes, for the script editor's test run. */
+  const testScript = async (code: string, phase: ScriptPhase): Promise<OutputLine[]> => {
+    if (!request) return [{ text: 'No request open', color: theme.warn }];
+    const info = request.type === 'http' ? httpResolved && httpRequestInfo(request.name, httpResolved) : resolved && grpcRequestInfo(request.name, resolved);
+    if (!info) return [{ text: 'Could not resolve the request', color: theme.error }];
+    const done = result && result.state !== 'running' ? result : undefined;
+    if (phase === 'after' && !done) return [{ text: 'No response yet: send the request (ctrl+r), then test the script against it', color: theme.warn }];
+    const response = done && (isHttpResult(done) ? httpResponseInfo(done) : grpcResponseInfo(done));
+    const outcome = await runScripts({
+      phase,
+      scripts: [{ script: { type: phase === 'before' ? 'beforeRequest' : 'afterResponse', code }, from: 'request' }],
+      request: info,
+      response,
+      vars: dryRunVars(workspaceVars(ws, { collection, ancestors, environment: env })),
+      timeoutMs: 5000,
+    });
+    const mask = secretMask(env);
+    const against = !done ? 'before sending' : isHttpResult(done) ? `against the last response (${done.status ?? 'failed'})` : `against the last response (${done.codeName ?? done.state} · ${done.messages.length} msg)`;
+    const lines: OutputLine[] = [{ text: `test run ${against} · variables are not saved`, color: theme.muted }];
+    if (outcome.error) lines.push({ text: `✗ ${outcome.error}`, color: theme.error });
+    for (const t of outcome.tests) lines.push({ text: `${t.passed ? '✓' : '✗'} ${t.name}${t.error ? `: ${t.error}` : ''}`, color: t.passed ? theme.ok : theme.error });
+    for (const s of outcome.set) lines.push({ text: s.value === undefined ? `would unset {{${s.name}}}` : `would set {{${s.name}}} = ${mask(s.name, s.value)}  (${s.where})`, color: theme.info });
+    for (const [name, value] of Object.entries(outcome.locals)) lines.push({ text: `{{${name}}} = ${mask(name, value)}  (this send only)`, color: theme.info });
+    for (const l of outcome.logs) lines.push({ text: l });
+    if (lines.length === 1) lines.push({ text: 'ran without errors (no tests, logs or variables)', color: theme.ok });
+    return lines;
   };
 
   const editMetadata = () => {
@@ -2485,6 +2525,25 @@ export function App({ workspace: ws }: { workspace: Workspace }) {
         return <PromptModal title={top.title} initial={top.initial} hint={top.hint} placeholder={top.placeholder} width={Math.min(modalWidth, 80)} onSubmit={top.onSubmit} onCancel={pop} />;
       case 'confirm':
         return <ConfirmModal title={top.title} message={top.message} width={Math.min(modalWidth, 70)} onConfirm={top.onConfirm} onCancel={pop} />;
+      case 'script':
+        return (
+          <ScriptEditorModal
+            title={top.title}
+            initial={top.initial}
+            width={modalWidth}
+            height={modalHeight}
+            check={checkScript}
+            onTest={(code) => testScript(code, top.phase)}
+            onExternal={(code) => {
+              const res = editInExternalEditor(code, '.ts');
+              setSpin((n) => n + 1);
+              if (res.error) setToast(res.error, theme.error);
+              return res.text;
+            }}
+            onSave={top.onSave}
+            onCancel={pop}
+          />
+        );
       case 'checklist':
         return <ChecklistModal title={top.title} note={top.note} items={top.items} width={modalWidth} height={modalHeight} onSubmit={top.onSubmit} onCancel={pop} />;
       case 'picker':

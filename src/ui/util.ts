@@ -115,3 +115,34 @@ export function tokenizeJsonLine(line: string): Token[] {
 export function which(cmd: string): boolean {
   return (process.env.PATH ?? '').split(':').some((dir) => dir && existsSync(`${dir}/${cmd}`));
 }
+
+export type CodeToken = { text: string; kind: 'comment' | 'string' | 'number' | 'keyword' | 'literal' | 'api' | 'var' | 'plain' };
+
+const KEYWORDS =
+  'const|let|var|function|return|if|else|for|while|do|of|in|new|await|async|try|catch|finally|throw|typeof|instanceof|import|export|from|as|class|extends|interface|type|switch|case|break|continue|default|delete|void';
+const CODE_RE = new RegExp(
+  [
+    String.raw`(\/\/.*$|\/\*.*?(?:\*\/|$))`, // comment (one line)
+    String.raw`(\{\{[^{}]*\}\})`, // {{var}}
+    String.raw`('(?:[^'\\]|\\.)*'?|"(?:[^"\\]|\\.)*"?|\x60(?:[^\x60\\]|\\.)*\x60?)`, // string
+    String.raw`(\b\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?n?\b)`, // number
+    `\\b(${KEYWORDS})\\b`,
+    String.raw`\b(true|false|null|undefined|this)\b`,
+    String.raw`\b(pm|bru|res|req|test|expect|console|crypto|require)\b`, // script API
+    String.raw`([\s\S])`,
+  ].join('|'),
+  'g',
+);
+
+/** Line-level JavaScript/TypeScript tokenizer for highlighting (comments and strings don't span lines). */
+export function tokenizeCodeLine(line: string): CodeToken[] {
+  const kinds: CodeToken['kind'][] = ['comment', 'var', 'string', 'number', 'keyword', 'literal', 'api', 'plain'];
+  const tokens: CodeToken[] = [];
+  for (const m of line.matchAll(CODE_RE)) {
+    const kind = kinds[m.slice(1).findIndex((g) => g !== undefined)] ?? 'plain';
+    const last = tokens.at(-1);
+    if (kind === 'plain' && last?.kind === 'plain') last.text += m[0];
+    else tokens.push({ text: m[0], kind });
+  }
+  return tokens;
+}

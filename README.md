@@ -135,7 +135,7 @@ Paths are `[message index].field.path`, e.g. `[0].items[2].sku`; streaming respo
 
 ### Scripts (e.g. log in once, then every call is authorized)
 
-Requests have a **Scripts** field: pre-request and post-response scripts in **JavaScript or TypeScript** (types are stripped by Node's built-in type stripping, Node 22.13+). `enter` on Scripts picks one to edit in `$VISUAL`/`$EDITOR` (a `.ts` file, with a commented example); emptying it deletes it. Collection and folder scripts run too (collection → folders → request), as in Postman.
+Requests have a **Scripts** field: pre-request and post-response scripts in **JavaScript or TypeScript** (types are stripped by Node's built-in type stripping, Node 22.13+). `enter` on **Scripts** (in the request pane, below Captures) picks one to edit in place: JS/TS syntax colors, a syntax check as you type (the status line and a ✗ in the gutter show the line), and `ctrl+t` to **test-run** the script against the last response (or before sending, for pre-request scripts). Test runs show tests, logs and the variables the script *would* set, without saving anything. `esc` keeps your changes, `ctrl+x` discards them, `ctrl+o` continues in `$VISUAL`/`$EDITOR`; emptying a script deletes it. Collection and folder scripts run too (collection → folders → request), as in Postman.
 
 A typical token request stores the token, and every gRPC call sends it through metadata `authorization: Bearer {{accessToken}}`:
 
